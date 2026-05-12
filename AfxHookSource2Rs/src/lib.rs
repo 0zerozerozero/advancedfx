@@ -101,6 +101,9 @@ unsafe extern "C" {
 
     fn afx_hook_source2_get_entity_ref_from_index(index: i32) -> * mut AfxEntityRef;
     fn afx_hook_source2_get_entity_ref_from_split_screen_player(index: i32) -> * mut AfxEntityRef;
+    fn afx_hook_source2_get_entity_ref_from_effective_split_screen_player(index: i32) -> * mut AfxEntityRef;
+    fn afx_hook_source2_is_fake_pov_radar_frame_context_active() -> bool;
+    fn afx_hook_source2_consume_fake_pov_radar_frame_context_was_active() -> bool;
 
     fn afx_hook_source2_add_ref_entity_ref(p_ref: * mut AfxEntityRef);
     fn afx_hook_source2_release_entity_ref(p_ref: * mut AfxEntityRef);
@@ -861,6 +864,14 @@ fn afx_get_entity_ref_from_split_screen_player(index: i32) -> * mut AfxEntityRef
     let result: * mut AfxEntityRef;
     unsafe {
         result = afx_hook_source2_get_entity_ref_from_split_screen_player(index);
+    }
+    return result;
+}
+
+fn afx_get_entity_ref_from_effective_split_screen_player(index: i32) -> * mut AfxEntityRef {
+    let result: * mut AfxEntityRef;
+    unsafe {
+        result = afx_hook_source2_get_entity_ref_from_effective_split_screen_player(index);
     }
     return result;
 }
@@ -2275,6 +2286,28 @@ fn mirv_get_entity_ref_from_split_screen_player(_this: &JsValue, args: &[JsValue
     return Err(advancedfx::js::errors::error_arguments(context).into());
 }
 
+fn mirv_get_entity_ref_from_effective_split_screen_player(_this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    if 1 == args.len() {
+        if let Some(index) = args[0].as_number() {
+            let entity_ref: * mut AfxEntityRef;
+            entity_ref = afx_get_entity_ref_from_effective_split_screen_player(index as i32);
+            if entity_ref.is_null() {
+                return Ok(JsValue::null());
+            }
+            return Ok(js_value!(MirvEntityRef::create(entity_ref,context)));
+        }
+    }
+    return Err(advancedfx::js::errors::error_arguments(context).into());
+}
+
+fn mirv_is_fake_pov_radar_frame_context_active(_this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
+   return Ok(js_value!(unsafe { afx_hook_source2_is_fake_pov_radar_frame_context_active() }));
+}
+
+fn mirv_consume_fake_pov_radar_frame_context_was_active(_this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
+   return Ok(js_value!(unsafe { afx_hook_source2_consume_fake_pov_radar_frame_context_was_active() }));
+}
+
 fn mirv_set_on_add_entity(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     if let Some(object) = this.as_object() {
         if let Some(mirv) = object.downcast_ref::<MirvStruct>() {
@@ -2582,6 +2615,21 @@ impl<'a> AfxHookSource2Rs<'a> {
             js_string!("getEntityFromSplitScreenPlayer"),
             0,
         )           
+        .function(
+            NativeFunction::from_fn_ptr(mirv_get_entity_ref_from_effective_split_screen_player),
+            js_string!("getEffectiveEntityFromSplitScreenPlayer"),
+            0,
+        )
+        .function(
+            NativeFunction::from_fn_ptr(mirv_is_fake_pov_radar_frame_context_active),
+            js_string!("isFakePovRadarFrameContextActive"),
+            0,
+        )
+        .function(
+            NativeFunction::from_fn_ptr(mirv_consume_fake_pov_radar_frame_context_was_active),
+            js_string!("consumeFakePovRadarFrameContextWasActive"),
+            0,
+        )
         .function(
             NativeFunction::from_fn_ptr(mirv_get_handle_entry_index),
             js_string!("getHandleEntryIndex"),

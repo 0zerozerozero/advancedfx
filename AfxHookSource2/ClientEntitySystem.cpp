@@ -68,10 +68,9 @@ struct FakePovRadarFrameContextState {
 };
 
 struct SpottedRestoreEntry {
-    CEntityInstance * pawn;
+    int pawnEntryIndex;
     uint8_t originalSpotted;
     uint32_t originalMask[2];
-    bool patchedMask;
 };
 
 static constexpr int kMaxSpottedRestoreEntries = 64;
@@ -895,7 +894,7 @@ void FakePovRadar_BeginClientFrameContext() {
                 uint32_t * pMask = (uint32_t*)(spottedState + g_clientDllOffsets.EntitySpottedState_t.m_bSpottedByMask);
 
                 if(g_SpottedRestoreCount < kMaxSpottedRestoreEntries) {
-                    g_SpottedRestoreEntries[g_SpottedRestoreCount].pawn = pawn;
+                    g_SpottedRestoreEntries[g_SpottedRestoreCount].pawnEntryIndex = pawnHandle.GetEntryIndex();
                     g_SpottedRestoreEntries[g_SpottedRestoreCount].originalSpotted = *pSpotted;
                     g_SpottedRestoreEntries[g_SpottedRestoreCount].originalMask[0] = pMask[0];
                     g_SpottedRestoreEntries[g_SpottedRestoreCount].originalMask[1] = pMask[1];
@@ -1018,9 +1017,10 @@ void FakePovRadar_RestoreSpottedState() {
     if(g_SpottedRestoreCount == 0) return;
     for(int i = 0; i < g_SpottedRestoreCount; ++i) {
         auto & entry = g_SpottedRestoreEntries[i];
-        if(nullptr == entry.pawn) continue;
+        CEntityInstance * pawn = GetEntityFromIndex(entry.pawnEntryIndex);
+        if(nullptr == pawn || !pawn->IsPlayerPawn()) continue;
         if(0 == g_clientDllOffsets.C_CSPlayerPawnBase.m_entitySpottedState) continue;
-        auto spottedState = (unsigned char*)entry.pawn + g_clientDllOffsets.C_CSPlayerPawnBase.m_entitySpottedState;
+        auto spottedState = (unsigned char*)pawn + g_clientDllOffsets.C_CSPlayerPawnBase.m_entitySpottedState;
         uint8_t * pSpotted = (uint8_t*)(spottedState + g_clientDllOffsets.EntitySpottedState_t.m_bSpotted);
         uint32_t * pMask = (uint32_t*)(spottedState + g_clientDllOffsets.EntitySpottedState_t.m_bSpottedByMask);
         *pSpotted = entry.originalSpotted;
@@ -1028,6 +1028,22 @@ void FakePovRadar_RestoreSpottedState() {
         pMask[1] = entry.originalMask[1];
     }
     g_SpottedRestoreCount = 0;
+}
+
+void FakePovRadar_ReWriteSpotted() {
+    if(g_SpottedRestoreCount == 0) return;
+    for(int i = 0; i < g_SpottedRestoreCount; ++i) {
+        auto & entry = g_SpottedRestoreEntries[i];
+        CEntityInstance * pawn = GetEntityFromIndex(entry.pawnEntryIndex);
+        if(nullptr == pawn || !pawn->IsPlayerPawn()) continue;
+        if(0 == g_clientDllOffsets.C_CSPlayerPawnBase.m_entitySpottedState) continue;
+        auto spottedState = (unsigned char*)pawn + g_clientDllOffsets.C_CSPlayerPawnBase.m_entitySpottedState;
+        uint8_t * pSpotted = (uint8_t*)(spottedState + g_clientDllOffsets.EntitySpottedState_t.m_bSpotted);
+        uint32_t * pMask = (uint32_t*)(spottedState + g_clientDllOffsets.EntitySpottedState_t.m_bSpottedByMask);
+        *pSpotted = 1;
+        pMask[0] = 0xFFFFFFFF;
+        pMask[1] = 0xFFFFFFFF;
+    }
 }
 
 struct MirvEntityEntry {
@@ -1248,11 +1264,10 @@ static void RadarUpdate_ForceTeammateSpotted() {
         uint8_t * pSpotted = (uint8_t*)(spottedState + g_clientDllOffsets.EntitySpottedState_t.m_bSpotted);
         uint32_t * pMask = (uint32_t*)(spottedState + g_clientDllOffsets.EntitySpottedState_t.m_bSpottedByMask);
 
-        g_SpottedRestoreEntries[g_SpottedRestoreCount].pawn = pawn;
+        g_SpottedRestoreEntries[g_SpottedRestoreCount].pawnEntryIndex = pawnHandle.GetEntryIndex();
         g_SpottedRestoreEntries[g_SpottedRestoreCount].originalSpotted = *pSpotted;
         g_SpottedRestoreEntries[g_SpottedRestoreCount].originalMask[0] = pMask[0];
         g_SpottedRestoreEntries[g_SpottedRestoreCount].originalMask[1] = pMask[1];
-        g_SpottedRestoreEntries[g_SpottedRestoreCount].patchedMask = true;
 
         *pSpotted = 1;
         if(fakeSlot >= 0) {
@@ -1270,17 +1285,15 @@ static void RadarUpdate_ForceTeammateSpotted() {
 
 static void RadarUpdate_RestoreTeammateSpotted() {
     for(int i = 0; i < g_SpottedRestoreCount; ++i) {
-        CEntityInstance * pawn = g_SpottedRestoreEntries[i].pawn;
-        if(nullptr == pawn) continue;
+        CEntityInstance * pawn = GetEntityFromIndex(g_SpottedRestoreEntries[i].pawnEntryIndex);
+        if(nullptr == pawn || !pawn->IsPlayerPawn()) continue;
         if(0 == g_clientDllOffsets.C_CSPlayerPawnBase.m_entitySpottedState) continue;
         auto spottedState = (unsigned char*)pawn + g_clientDllOffsets.C_CSPlayerPawnBase.m_entitySpottedState;
         uint8_t * pSpotted = (uint8_t*)(spottedState + g_clientDllOffsets.EntitySpottedState_t.m_bSpotted);
+        uint32_t * pMask = (uint32_t*)(spottedState + g_clientDllOffsets.EntitySpottedState_t.m_bSpottedByMask);
         *pSpotted = g_SpottedRestoreEntries[i].originalSpotted;
-        if(g_SpottedRestoreEntries[i].patchedMask) {
-            uint32_t * pMask = (uint32_t*)(spottedState + g_clientDllOffsets.EntitySpottedState_t.m_bSpottedByMask);
-            pMask[0] = g_SpottedRestoreEntries[i].originalMask[0];
-            pMask[1] = g_SpottedRestoreEntries[i].originalMask[1];
-        }
+        pMask[0] = g_SpottedRestoreEntries[i].originalMask[0];
+        pMask[1] = g_SpottedRestoreEntries[i].originalMask[1];
     }
     g_SpottedRestoreCount = 0;
 }
@@ -1433,7 +1446,7 @@ ClientDll_GetSplitScreenPlayer_t g_Org_ClientDll_GetSplitScreenPlayer = nullptr;
 
 static CEntityInstance * __fastcall New_ClientDll_GetSplitScreenPlayer(int slot) {
     if(nullptr == g_Org_ClientDll_GetSplitScreenPlayer) return nullptr;
-    if(0 == slot && g_FakePovRadarFrameContextState.active) {
+    if(0 == slot) {
         if(CEntityInstance * fakeController = GetFakePovRadarController()) {
             return fakeController;
         }

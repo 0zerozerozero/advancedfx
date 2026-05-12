@@ -62,6 +62,7 @@ void FakePovRadar_BeginClientFrameContext();
 void FakePovRadar_EndClientFrameContext();
 
 void FakePovRadar_RestoreSpottedState();
+void FakePovRadar_ReWriteSpotted();
 
 class CAfxEntityInstanceRef;
 

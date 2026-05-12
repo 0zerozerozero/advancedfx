@@ -150,6 +150,12 @@ declare namespace mirv {
 
 	function getEntityFromSplitScreenPlayer(index: number): null | Entity;
 
+	function getEffectiveEntityFromSplitScreenPlayer(index: number): null | Entity;
+
+	function isFakePovRadarFrameContextActive(): boolean;
+
+	function consumeFakePovRadarFrameContextWasActive(): boolean;
+
 	/**
 	 * Since HLAE 2.169.0
 	 */
