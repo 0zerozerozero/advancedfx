@@ -1192,9 +1192,14 @@ void HookClientDll(HMODULE clientDll) {
 	{
 		Afx::BinUtils::MemRange range_get_split_screen_player = Afx::BinUtils::FindPatternString(textRange, "48 83 EC ?? 83 F9 ?? 75 ?? 48 8B 0D ?? ?? ?? ?? 48 8D 54 24 ?? 48 8B 01 FF 90 ?? ?? ?? ?? 8B 08 48 63 C1 48 8D 0D ?? ?? ?? ?? 48 8B 04 C1 48 83 C4 ?? C3");
 		if(!range_get_split_screen_player.IsEmpty()) {
+			// Temporarily isolate the remaining fake POV radar split-screen detour
+			// while tracing the no-pov.vpk BeginDebuggerInspect fatal.
 			Hook_GetSplitScreenPlayer((void*)range_get_split_screen_player.Start);
 		} else ErrorBox(MkErrStr(__FILE__, __LINE__));
 	}
+
+	// Initialize LocalPlayerControllerPointer pattern scan for Experiment A (non-fatal if not found)
+	FakePovRadar_InitLocalPlayerControllerPointer(clientDll);
 }
 
 SOURCESDK::CreateInterfaceFn g_AppSystemFactory = nullptr;
@@ -1451,6 +1456,10 @@ void  new_CS2_Client_FrameStageNotify(void* This, SOURCESDK::CS2::ClientFrameSta
 	
 	AfxHookSource2Rs_Engine_RunJobQueue();
 
+	if(curStage != SOURCESDK::CS2::FRAME_RENDER_PASS) {
+		FakePovRadar_RestoreSpottedState();
+	}
+
 	/*
 	// React to demo being paused / unpaused to work around Valve's new bandaid client time "fix":
 	bool bIsDemoPaused = false;
@@ -1508,7 +1517,15 @@ void  new_CS2_Client_FrameStageNotify(void* This, SOURCESDK::CS2::ClientFrameSta
 
 	AfxHookSource2Rs_Engine_OnClientFrameStageNotify(curStage, true);
 
+	if(curStage == SOURCESDK::CS2::FRAME_RENDER_PASS) {
+		FakePovRadar_BeginClientFrameContext();
+	}
+
 	old_CS2_Client_FrameStageNotify(This, curStage);
+
+	if(curStage == SOURCESDK::CS2::FRAME_RENDER_PASS) {
+		FakePovRadar_EndClientFrameContext();
+	}
 
 	AfxHookSource2Rs_Engine_OnClientFrameStageNotify(curStage, false);
 

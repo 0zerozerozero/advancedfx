@@ -6,6 +6,8 @@
 #include "SceneSystem.h"
 #include "SchemaSystem.h"
 
+#include <string>
+
 bool g_bHookedMirvCommands = false;
 
 bool g_bNoFlashEnabled = false;
@@ -73,6 +75,265 @@ void mirvNoFlash_Console(advancedfx::ICommandArgs* args) {
 CON_COMMAND(mirv_noflash, "Disables flash overlay.")
 {
 	mirvNoFlash_Console(args);
+}
+
+void mirvPovRadarLocal_Console(advancedfx::ICommandArgs* args) {
+	const auto arg0 = args->ArgV(0);
+	int argc = args->ArgC();
+
+	auto getControllerDisplayName = [](CEntityInstance * controller) -> const char * {
+		if(nullptr == controller) return "";
+		const char * playerName = controller->GetSanitizedPlayerName();
+		if(nullptr == playerName) playerName = controller->GetPlayerName();
+		if(nullptr == playerName) playerName = controller->GetDebugName();
+		if(nullptr == playerName) playerName = controller->GetClassName();
+		return playerName ? playerName : "";
+	};
+
+	auto printControllerSummary = [&](const char * label, CEntityInstance * controller) {
+		if(nullptr == controller) {
+			advancedfx::Message("%s: <null>\n", label);
+			return;
+		}
+
+		auto handle = controller->GetHandle();
+		auto team = controller->GetTeam();
+		auto pawnHandle = controller->GetPlayerPawnHandle();
+		const char * playerName = getControllerDisplayName(controller);
+
+		advancedfx::Message(
+			"%s: handle=%i team=%i pawnHandle=%i name=%s\n"
+			, label
+			, handle.ToInt()
+			, team
+			, pawnHandle.ToInt()
+			, playerName ? playerName : ""
+		);
+	};
+
+	auto printRadarSnapshot = [&](CEntityInstance * effectiveLocal, CEntityInstance * targetController) {
+		auto describeRelation = [](int localTeam, int team) -> const char * {
+			if (localTeam <= 1 || team <= 1) return "unknown";
+			return localTeam == team ? "teammate" : "enemy";
+		};
+
+		auto printPawnSnapshot = [&](const char * label, CEntityInstance * controller, int localTeam) {
+			if(nullptr == controller) {
+				advancedfx::Message("%s: <null>\n", label);
+				return;
+			}
+
+			auto controllerHandle = controller->GetHandle();
+			auto pawnHandle = controller->GetPlayerPawnHandle();
+			CEntityInstance * pawn = pawnHandle.IsValid() ? GetEntityFromIndex(pawnHandle.GetEntryIndex()) : nullptr;
+			int controllerTeam = controller->GetTeam();
+			int pawnTeam = pawn ? pawn->GetTeam() : 0;
+			bool spotted = false;
+			uint32_t mask0 = 0;
+			uint32_t mask1 = 0;
+			bool hasSpottedState = pawn ? pawn->GetSpottedState(spotted, mask0, mask1) : false;
+			const char * relation = describeRelation(localTeam, pawnTeam > 1 ? pawnTeam : controllerTeam);
+			int compColor = CEntityInstance_GetCompTeammateColor(controller);
+
+			advancedfx::Message(
+				"%s: controllerHandle=%i pawnHandle=%i controllerTeam=%i pawnTeam=%i relation=%s color=%i observerMode=%u observerTarget=%i viewEntity=%i spotted=%s mask=[0x%08X,0x%08X] name=%s\n"
+				, label
+				, controllerHandle.ToInt()
+				, pawnHandle.ToInt()
+				, controllerTeam
+				, pawnTeam
+				, relation
+				, compColor
+				, pawn ? pawn->GetObserverMode() : 0
+				, pawn ? pawn->GetObserverTarget().ToInt() : 0
+				, pawn ? pawn->GetViewEntityHandle().ToInt() : 0
+				, hasSpottedState ? (spotted ? "1" : "0") : "n/a"
+				, mask0
+				, mask1
+				, getControllerDisplayName(controller)
+			);
+		};
+
+		int localTeam = effectiveLocal ? effectiveLocal->GetTeam() : 0;
+		advancedfx::Message("[mirv_pov_radar_snapshot] begin\n");
+		printPawnSnapshot("effective local", effectiveLocal, localTeam);
+		printPawnSnapshot("target", targetController, localTeam);
+
+		int highestIndex = GetHighestEntityIndex();
+		for(int i = 0; i < highestIndex + 1; ++i) {
+			CEntityInstance * controller = GetEntityFromIndex(i);
+			if(nullptr == controller || !controller->IsPlayerController()) continue;
+			int team = controller->GetTeam();
+			if(2 != team && 3 != team) continue;
+
+			std::string label = std::string("player[") + std::to_string(i) + "]";
+			printPawnSnapshot(label.c_str(), controller, localTeam);
+		}
+		advancedfx::Message("[mirv_pov_radar_snapshot] end\n");
+	};
+
+	if(3 <= argc) {
+		const char * arg1 = args->ArgV(1);
+		const char * arg2 = args->ArgV(2);
+
+		if(0 == _stricmp(arg1, "radar_hook")) {
+			int slot = atoi(arg2);
+			if(0 == _stricmp(arg2, "off") || 0 == _stricmp(arg2, "disable")) {
+				Hook_HudRadarUpdate(nullptr, -1);
+			} else {
+				HMODULE hClient = GetModuleHandleW(L"client.dll");
+				Hook_HudRadarUpdate(hClient, slot);
+			}
+			return;
+		}
+
+		if(0 == _stricmp(arg1, "experiments") || 0 == _stricmp(arg1, "exp")) {
+			unsigned int flags = 0;
+			if(0 == _stricmp(arg2, "off")) {
+				flags = 0;
+			} else if(0 == _stricmp(arg2, "all")) {
+				flags = kFakePovRadarExp_LocalPointer | kFakePovRadarExp_ForceSpotted | kFakePovRadarExp_ControllerFlags | kFakePovRadarExp_ObserverMode;
+			} else {
+				const char * p = arg2;
+				while(*p) {
+					char ch = *p;
+					if(ch == 'a' || ch == 'A') flags |= kFakePovRadarExp_LocalPointer;
+					else if(ch == 'b' || ch == 'B') flags |= kFakePovRadarExp_ForceSpotted;
+					else if(ch == 'c' || ch == 'C') flags |= kFakePovRadarExp_ControllerFlags;
+					else if(ch == 'd' || ch == 'D') flags |= kFakePovRadarExp_ObserverMode;
+					p++;
+				}
+			}
+
+			SetFakePovRadarExperimentFlags(flags);
+			advancedfx::Message("%s experiments set to: 0x%X\n", arg0, flags);
+			return;
+		}
+	}
+
+	if(2 == argc) {
+		const char * arg1 = args->ArgV(1);
+
+		if(0 == _stricmp(arg1, "status")) {
+			const int fakeIndex = GetFakePovRadarControllerIndex();
+			unsigned int expFlags = GetFakePovRadarExperimentFlags();
+			std::string expStr;
+			if(expFlags == 0) {
+				expStr = "off";
+			} else {
+				if(expFlags & kFakePovRadarExp_LocalPointer) expStr += "a";
+				if(expFlags & kFakePovRadarExp_ForceSpotted) expStr += "b";
+				if(expFlags & kFakePovRadarExp_ControllerFlags) expStr += "c";
+				if(expFlags & kFakePovRadarExp_ObserverMode) expStr += "d";
+			}
+
+			advancedfx::Message(
+				"%s status - offline demo playback only; do not use on VAC-protected servers\n"
+				"Enabled: %s\n"
+				"Mode: %s\n"
+				"Configured controller index: %i\n"
+				"Experiments: %s\n"
+				"LocalPlayerControllerPointer: %s (addr=%p)\n"
+				, arg0
+				, IsFakePovRadarEnabled() ? "yes" : "no"
+				, GetFakePovRadarAutoSync() ? "auto (follow observer target)" : "manual"
+				, fakeIndex
+				, expStr.c_str()
+				, FakePovRadar_HasLocalPlayerControllerPointer() ? "resolved" : "unresolved"
+				, FakePovRadar_GetLocalPlayerControllerPointerAddress()
+			);
+
+			CEntityInstance * realLocal = GetRealSplitScreenPlayer(0);
+			CEntityInstance * effectiveLocal = GetEffectiveSplitScreenPlayer(0);
+			CEntityInstance * fakeController = GetFakePovRadarController();
+
+			printControllerSummary("real local controller", realLocal);
+			printControllerSummary("effective local controller", effectiveLocal);
+			printControllerSummary("configured fake controller", fakeController);
+
+			if(CEntityInstance * localPawn = effectiveLocal ? GetEntityFromIndex(effectiveLocal->GetPlayerPawnHandle().GetEntryIndex()) : nullptr) {
+				advancedfx::Message(
+					"effective local pawn: handle=%i observerMode=%u observerTarget=%i viewEntity=%i\n"
+					, localPawn->GetHandle().ToInt()
+					, localPawn->GetObserverMode()
+					, localPawn->GetObserverTarget().ToInt()
+					, localPawn->GetViewEntityHandle().ToInt()
+				);
+			} else {
+				advancedfx::Message("effective local pawn: <null>\n");
+			}
+			return;
+		}
+
+		if(0 == _stricmp(arg1, "snapshot")) {
+			CEntityInstance * effectiveLocal = GetEffectiveSplitScreenPlayer(0);
+			CEntityInstance * fakeController = GetFakePovRadarController();
+			printRadarSnapshot(effectiveLocal, fakeController ? fakeController : effectiveLocal);
+			return;
+		}
+
+		if(0 == _stricmp(arg1, "radar_hook_count")) {
+			long count = GetHudRadarHookCallCount();
+			advancedfx::Message("[mirv_pov_radar] radar_hook call count since last query: %ld (slot=%d)\n", count, GetHudRadarHookSlot());
+			return;
+		}
+
+		if(0 == _stricmp(arg1, "experiments") || 0 == _stricmp(arg1, "exp")) {
+			advancedfx::Message(
+				"Usage: %s experiments <off|a|b|c|d|abcd|all>\n"
+				"  off  - No experiments (baseline fake-local only)\n"
+				"  a    - Patch LocalPlayerControllerPointer\n"
+				"  b    - Force enemy m_bSpotted\n"
+				"  c    - Patch m_bIsLocalPlayerController / m_bIsHLTV\n"
+				"  d    - Patch m_iObserverMode to OBS_MODE_NONE\n"
+				"  abcd - All experiments (or use 'all')\n"
+				"  Combine letters freely: ab, acd, bd, etc.\n"
+				"Current: 0x%X\n"
+				, arg0
+				, GetFakePovRadarExperimentFlags()
+			);
+			return;
+		}
+
+		if(0 == _stricmp(arg1, "auto")) {
+			SetFakePovRadarAutoSync(true);
+			advancedfx::Message(
+				"%s auto - offline demo playback only; do not use on VAC-protected servers\n"
+				"Fake POV radar auto-sync enabled. Will follow current observer target.\n"
+				, arg0
+			);
+			return;
+		}
+
+		int controllerIndex = atoi(arg1);
+		SetFakePovRadarControllerIndex(controllerIndex);
+		advancedfx::Message(
+			"%s %i - offline demo playback only; do not use on VAC-protected servers\n"
+			"Fake POV radar local controller %s.\n"
+			, arg0
+			, controllerIndex
+			, IsFakePovRadarEnabled() ? "enabled" : "disabled"
+		);
+		return;
+	}
+
+	advancedfx::Message(
+		"Usage:\n"
+		"%s <controllerIndex> - Use the given controller entity index as effective local split-screen player for fake POV radar experiments.\n"
+		"%s auto - Auto-sync: follow current observer target (recommended).\n"
+		"%s 0 - Disable fake POV radar local override.\n"
+		"%s status - Print configured fake controller, real local controller, effective local controller, and observer context.\n"
+		"%s snapshot - Print schema-backed radar snapshot for effective local, target, and all player controllers.\n"
+		"%s experiments <off|a|b|c|d|abcd|all> - Toggle radar experiments (a=LocalPointer, b=ForceSpotted, c=ControllerFlags, d=ObserverMode).\n"
+		"%s radar_hook <slot|off> - Hook CCSGO_HudRadar vtable at given slot index (scoped spotted patch). Use 'off' to disable.\n"
+		"Warning: offline demo playback only; do not use on VAC-protected servers.\n"
+		, arg0, arg0, arg0, arg0, arg0, arg0, arg0
+	);
+}
+
+CON_COMMAND(mirv_pov_radar_local, "Experimental fake POV radar local-controller override.")
+{
+	mirvPovRadarLocal_Console(args);
 }
 
 ///////////////////////////////////////////////////////////////////////////////

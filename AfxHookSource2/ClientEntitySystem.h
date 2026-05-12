@@ -13,6 +13,56 @@ void Hook_ClientEntitySystem3(HMODULE clientDll);
 
 bool Hook_GetSplitScreenPlayer( void* pAddr);
 
+class CEntityInstance * GetEntityFromIndex(int index);
+
+class CEntityInstance * GetRealSplitScreenPlayer(int slot);
+
+class CEntityInstance * GetFakePovRadarController();
+
+class CEntityInstance * GetEffectiveSplitScreenPlayer(int slot);
+
+void SetFakePovRadarControllerIndex(int index);
+
+int GetFakePovRadarControllerIndex();
+
+void SetFakePovRadarAutoSync(bool enabled);
+
+bool GetFakePovRadarAutoSync();
+
+bool IsFakePovRadarEnabled();
+
+enum FakePovRadarExperimentFlags : unsigned int {
+    kFakePovRadarExp_None = 0,
+    kFakePovRadarExp_LocalPointer = 1 << 0,
+    kFakePovRadarExp_ForceSpotted = 1 << 1,
+    kFakePovRadarExp_ControllerFlags = 1 << 2,
+    kFakePovRadarExp_ObserverMode = 1 << 3,
+};
+
+void SetFakePovRadarExperimentFlags(unsigned int flags);
+unsigned int GetFakePovRadarExperimentFlags();
+
+bool FakePovRadar_InitLocalPlayerControllerPointer(HMODULE clientDll);
+bool FakePovRadar_HasLocalPlayerControllerPointer();
+void * FakePovRadar_GetLocalPlayerControllerPointerAddress();
+
+bool Hook_HudRadarUpdate(HMODULE clientDll, int vtableSlot);
+void * GetHudRadarVtable();
+int GetHudRadarHookSlot();
+long GetHudRadarHookCallCount();
+
+int CEntityInstance_GetCompTeammateColor(class CEntityInstance * controller);
+
+bool IsFakePovRadarFrameContextActive();
+
+bool ConsumeFakePovRadarFrameContextWasActive();
+
+void FakePovRadar_BeginClientFrameContext();
+
+void FakePovRadar_EndClientFrameContext();
+
+void FakePovRadar_RestoreSpottedState();
+
 class CAfxEntityInstanceRef;
 
 class CEntityInstance {
@@ -58,6 +108,7 @@ public:
 
     uint8_t GetObserverMode();
     SOURCESDK::CS2::CBaseHandle GetObserverTarget();
+    bool GetSpottedState(bool & spotted, uint32_t & mask0, uint32_t & mask1);
 
     SOURCESDK::CS2::CBaseHandle GetHandle();
 

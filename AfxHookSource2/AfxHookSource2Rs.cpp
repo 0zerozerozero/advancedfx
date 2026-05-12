@@ -83,6 +83,10 @@ extern "C" int afx_hook_source2_get_highest_entity_index();
 
 extern "C" void * afx_hook_source2_get_entity_ref_from_index(int index);
 
+extern "C" void * afx_hook_source2_get_entity_ref_from_split_screen_player(int index);
+
+extern "C" void * afx_hook_source2_get_entity_ref_from_effective_split_screen_player(int index);
+
 extern "C" void afx_hook_source2_add_ref_entity_ref(void * pRef);
 
 extern "C" void afx_hook_source2_release_entity_ref(void * pRef);

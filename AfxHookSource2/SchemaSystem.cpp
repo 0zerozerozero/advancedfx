@@ -81,6 +81,17 @@ bool getOffset(ptrdiff_t* offset, std::string moduleName, std::string className,
 	return true;
 }
 
+bool getOffsetAny(ptrdiff_t* offset, std::string moduleName, std::initializer_list<const char*> classNames, std::string fieldName)
+{
+	for (const char* className : classNames) {
+		if (className && getOffset(offset, moduleName, className, fieldName)) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
 void initSchemaSystemOffsets()
 {
 	bool bOk = true;
@@ -100,11 +111,19 @@ void initSchemaSystemOffsets()
 	bOk = bOk && getOffset(&g_clientDllOffsets.CBasePlayerController.m_iszPlayerName, "client.dll", "CBasePlayerController", "m_iszPlayerName");
 	bOk = bOk && getOffset(&g_clientDllOffsets.CBasePlayerController.m_steamID, "client.dll", "CBasePlayerController", "m_steamID");
 	bOk = bOk && getOffset(&g_clientDllOffsets.CBasePlayerController.m_hPawn, "client.dll", "CBasePlayerController", "m_hPawn");
+	bOk = bOk && getOffset(&g_clientDllOffsets.CBasePlayerController.m_bIsLocalPlayerController, "client.dll", "CBasePlayerController", "m_bIsLocalPlayerController");
+	bOk = bOk && getOffset(&g_clientDllOffsets.CBasePlayerController.m_bIsHLTV, "client.dll", "CBasePlayerController", "m_bIsHLTV");
 	bOk = bOk && getOffset(&g_clientDllOffsets.CCSPlayerController.m_sSanitizedPlayerName, "client.dll", "CCSPlayerController", "m_sSanitizedPlayerName");
+	bOk = bOk && getOffset(&g_clientDllOffsets.CCSPlayerController.m_hPlayerPawn, "client.dll", "CCSPlayerController", "m_hPlayerPawn");
+	bOk = bOk && getOffset(&g_clientDllOffsets.CCSPlayerController.m_hObserverPawn, "client.dll", "CCSPlayerController", "m_hObserverPawn");
+	bOk = bOk && getOffset(&g_clientDllOffsets.CCSPlayerController.m_iCompTeammateColor, "client.dll", "CCSPlayerController", "m_iCompTeammateColor");
 	bOk = bOk && getOffset(&g_clientDllOffsets.C_BasePlayerPawn.m_hController, "client.dll", "C_BasePlayerPawn", "m_hController");
 	bOk = bOk && getOffset(&g_clientDllOffsets.C_BasePlayerPawn.m_pWeaponServices, "client.dll", "C_BasePlayerPawn", "m_pWeaponServices");
 	bOk = bOk && getOffset(&g_clientDllOffsets.C_BasePlayerPawn.m_pObserverServices, "client.dll", "C_BasePlayerPawn", "m_pObserverServices");
 	bOk = bOk && getOffset(&g_clientDllOffsets.C_BasePlayerPawn.m_pCameraServices, "client.dll", "C_BasePlayerPawn", "m_pCameraServices");
+	bOk = bOk && getOffsetAny(&g_clientDllOffsets.C_CSPlayerPawnBase.m_entitySpottedState, "client.dll", {"C_CSPlayerPawn", "C_CSPlayerPawnBase"}, "m_entitySpottedState");
+	bOk = bOk && getOffset(&g_clientDllOffsets.EntitySpottedState_t.m_bSpotted, "client.dll", "EntitySpottedState_t", "m_bSpotted");
+	bOk = bOk && getOffset(&g_clientDllOffsets.EntitySpottedState_t.m_bSpottedByMask, "client.dll", "EntitySpottedState_t", "m_bSpottedByMask");
 	bOk = bOk && getOffset(&g_clientDllOffsets.CPlayer_WeaponServices.m_hActiveWeapon, "client.dll", "CPlayer_WeaponServices", "m_hActiveWeapon");
 	bOk = bOk && getOffset(&g_clientDllOffsets.CPlayer_CameraServices.m_hViewEntity, "client.dll", "CPlayer_CameraServices", "m_hViewEntity");
 	bOk = bOk && getOffset(&g_clientDllOffsets.CPlayer_ObserverServices.m_iObserverMode, "client.dll", "CPlayer_ObserverServices", "m_iObserverMode");

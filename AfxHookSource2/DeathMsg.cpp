@@ -25,6 +25,7 @@
 #include <set>
 #include <algorithm>
 #include <vector>
+#include <string>
 
 // TODO: move panorama stuff out after addresses.cpp is done
 // decompose/change myPanoramaWrapper too
@@ -36,6 +37,16 @@ void* g_CStylePropertyOpacity_vtable = 0;
 
 typedef void(__fastcall *g_CPanelStyleSetStyleProperty_t)(void* This, void* property, bool transition);
 g_CPanelStyleSetStyleProperty_t g_CPanelStyleSetStyleProperty = nullptr;
+
+static bool g_LoggedPanoramaRadarTree = false;
+static bool g_PendingPanoramaRadarDiagnostics = false;
+static std::set<std::string> g_LoggedPanoramaHudFiles;
+static std::set<std::string> g_LoggedPanoramaRadarForegroundStyles;
+static std::set<std::string> g_LoggedPanoramaRadarBackgroundStyles;
+static std::set<std::string> g_LoggedPanoramaRadarBorderStyles;
+static std::set<std::string> g_LoggedPanoramaRadarWashStyles;
+
+void PrintLoggedRadarStyleSet(const char * label, const std::set<std::string> & values);
 
 struct CPanel2D {
 	const char* getClassName() {
@@ -581,6 +592,159 @@ struct myPanoramaWrapper {
 
 	}
 
+	void printPanelSubtreeRecursive(u_char * panel, int depth, int maxDepth) {
+		if (!panel || depth > maxDepth) return;
+
+		const char * panelId = *(char **)(panel + CS2::PanoramaUIPanel::panelId);
+		auto panel2D = *(CPanel2D **)(panel + 0x8);
+		const char * className = panel2D ? panel2D->getClassName() : "null";
+
+		std::string indent(depth * 2, ' ');
+		advancedfx::Message("[mirv_pov_radar_diag] %s%s / %s\n", indent.c_str(), className ? className : "null", panelId ? panelId : "");
+
+		const auto children = panel + CS2::PanoramaUIPanel::children;
+		if (!children) return;
+
+		for (int i = 0; i < *(int*)children; ++i) {
+			const auto child = ((u_char***)children)[1][i];
+			printPanelSubtreeRecursive(child, depth + 1, maxDepth);
+		}
+	}
+
+	void printPanelSubtree(const char * header, u_char * panel, int maxDepth) {
+		if (!panel) return;
+
+		advancedfx::Message("[mirv_pov_radar_diag] panel tree: %s\n", header ? header : "<null>");
+		printPanelSubtreeRecursive(panel, 0, maxDepth);
+	}
+
+	bool containsCaseInsensitive(const char * haystack, const char * needle) {
+		if (!haystack || !needle) return false;
+
+		std::string haystackLower(haystack);
+		std::string needleLower(needle);
+		std::transform(haystackLower.begin(), haystackLower.end(), haystackLower.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+		std::transform(needleLower.begin(), needleLower.end(), needleLower.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+
+		return std::string::npos != haystackLower.find(needleLower);
+	}
+
+	bool isRadarInterestingPanel(const char * panelId, const char * className) {
+		static const char * keywords[] = {
+			"radar",
+			"overview",
+			"observer",
+			"spect",
+			"spec",
+			"local",
+			"player",
+			"team"
+		};
+
+		for (const char * keyword : keywords) {
+			if (containsCaseInsensitive(panelId, keyword) || containsCaseInsensitive(className, keyword)) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	void printInterestingRadarPanelsRecursive(u_char * panel, int depth, int maxDepth) {
+		if (!panel || depth > maxDepth) return;
+
+		const char * panelId = *(char **)(panel + CS2::PanoramaUIPanel::panelId);
+		auto panel2D = *(CPanel2D **)(panel + 0x8);
+		const char * className = panel2D ? panel2D->getClassName() : "null";
+
+		if (isRadarInterestingPanel(panelId, className)) {
+			std::string indent(depth * 2, ' ');
+			advancedfx::Message("[mirv_pov_radar_diag] interesting %s%s / %s\n", indent.c_str(), className ? className : "null", panelId ? panelId : "");
+		}
+
+		const auto children = panel + CS2::PanoramaUIPanel::children;
+		if (!children) return;
+
+		for (int i = 0; i < *(int*)children; ++i) {
+			const auto child = ((u_char***)children)[1][i];
+			printInterestingRadarPanelsRecursive(child, depth + 1, maxDepth);
+		}
+	}
+
+	void printInterestingRadarPanels(const char * header, u_char * panel, int maxDepth) {
+		if (!panel) return;
+
+		advancedfx::Message("[mirv_pov_radar_diag] interesting panels: %s\n", header ? header : "<null>");
+		printInterestingRadarPanelsRecursive(panel, 0, maxDepth);
+	}
+
+	void printRadarDiagnosticsOnce() {
+		if (g_LoggedPanoramaRadarTree) return;
+		printRadarDiagnostics("auto");
+	}
+
+	void printRadarDiagnostics(const char * reason) {
+		if (nullptr == pHudPanel) return;
+
+		auto hudPanel = ((u_char***)pHudPanel)[0][1];
+		if (!hudPanel) return;
+
+		bool foundAny = false;
+		advancedfx::Message("[mirv_pov_radar_diag] radar diagnostics: %s\n", reason ? reason : "manual");
+
+		if (auto panel = findChildInLayoutFile(hudPanel, "HudRadar")) {
+			printPanelSubtree("HudRadar", panel, 6);
+			printInterestingRadarPanels("HudRadar", panel, 8);
+			foundAny = true;
+		}
+
+		if (auto panel = findChildInLayoutFile(hudPanel, "Radar")) {
+			printPanelSubtree("Radar", panel, 5);
+			printInterestingRadarPanels("Radar", panel, 7);
+			foundAny = true;
+		}
+
+		if (auto panel = findChildInLayoutFile(hudPanel, "MapOverview")) {
+			printPanelSubtree("MapOverview", panel, 5);
+			printInterestingRadarPanels("MapOverview", panel, 7);
+			foundAny = true;
+		}
+
+		auto radarClasses = findChildrenInLayoutFileByClassName(hudPanel, "CCSGOHudRadar");
+		for (size_t i = 0; i < radarClasses.size(); ++i) {
+			std::string header = std::string("CCSGOHudRadar[") + std::to_string(i) + "]";
+			printPanelSubtree(header.c_str(), radarClasses[i], 6);
+			printInterestingRadarPanels(header.c_str(), radarClasses[i], 8);
+			foundAny = true;
+		}
+
+		auto mapClasses = findChildrenInLayoutFileByClassName(hudPanel, "CCSGOMapOverview");
+		for (size_t i = 0; i < mapClasses.size(); ++i) {
+			std::string header = std::string("CCSGOMapOverview[") + std::to_string(i) + "]";
+			printPanelSubtree(header.c_str(), mapClasses[i], 5);
+			printInterestingRadarPanels(header.c_str(), mapClasses[i], 7);
+			foundAny = true;
+		}
+
+		if (!foundAny) {
+			advancedfx::Message("[mirv_pov_radar_diag] radar panel tree: no matching panel ids/classes found yet\n");
+		}
+
+		g_LoggedPanoramaRadarTree = true;
+	}
+
+	void printRadarDiagnosticsManual() {
+		g_LoggedPanoramaRadarTree = false;
+		printRadarDiagnostics("manual command");
+	}
+
+	void printRadarStyleDiagnostics() {
+		PrintLoggedRadarStyleSet("radar foreground style cached", g_LoggedPanoramaRadarForegroundStyles);
+		PrintLoggedRadarStyleSet("radar background style cached", g_LoggedPanoramaRadarBackgroundStyles);
+		PrintLoggedRadarStyleSet("radar border style cached", g_LoggedPanoramaRadarBorderStyles);
+		PrintLoggedRadarStyleSet("radar wash style cached", g_LoggedPanoramaRadarWashStyles);
+	}
+
 	std::vector<u_char*> findChildrenInLayoutFileByClassName(u_char* parentPanel, const char* classNameToFind) {
 		std::vector<u_char*> res;
 		if (!parentPanel) return res;
@@ -602,7 +766,7 @@ struct myPanoramaWrapper {
 
 		for (int i = 0; i < *(int*)children; ++i) {
 			const auto panel = ((u_char***)children)[1][i];
-			const auto panelFlags = (u_char)(panel + CS2::PanoramaUIPanel::panelFlags);
+			const auto panelFlags = *(u_char *)(panel + CS2::PanoramaUIPanel::panelFlags);
 			if ((panelFlags & CS2::PanoramaUIPanel::k_EPanelFlag_HasOwnLayoutFile) == 0) {
 				auto found = findChildrenInLayoutFileByClassName(panel, classNameToFind);
 				if (!found.empty()) {
@@ -633,7 +797,7 @@ struct myPanoramaWrapper {
 
 		for (int i = 0; i < *(int*)children; ++i) {
 			const auto panel = ((u_char***)children)[1][i];
-			const auto panelFlags = (u_char)(panel + CS2::PanoramaUIPanel::panelFlags);
+			const auto panelFlags = *(u_char *)(panel + CS2::PanoramaUIPanel::panelFlags);
 			if ((panelFlags & CS2::PanoramaUIPanel::k_EPanelFlag_HasOwnLayoutFile) == 0) {
 				if (const auto found = findChildInLayoutFile(panel, idToFind)) {
 					return found;
@@ -691,6 +855,11 @@ CON_COMMAND(__mirv_panorama_print_children, "") {
 	} else {
 		g_myPanoramaWrapper.printChildren("");
 	}
+}
+
+CON_COMMAND(__mirv_pov_radar_diag, "Print fake POV radar Panorama diagnostics") {
+	g_myPanoramaWrapper.printRadarDiagnosticsManual();
+	g_myPanoramaWrapper.printRadarStyleDiagnostics();
 }
 
 typedef uint32_t* (__fastcall *g_Original_hashString_t)(uint32_t* pResult, const char* string);
@@ -854,6 +1023,13 @@ uint64_t __fastcall getLocalSteamId(void* param_1) {
 	uint64_t result = 0;
 	MyDeathMsgPlayerEntry entry;
 	bool use = false;
+
+	if (CEntityInstance* fakeController = GetFakePovRadarController()) {
+		uint64_t fakeSteamId = fakeController->GetSteamId();
+		if (0 != fakeSteamId) {
+			return fakeSteamId;
+		}
+	}
 
 	if (nullptr != g_MirvDeathMsgGlobals.activeWrapper) { 
 		if (g_MirvDeathMsgGlobals.activeWrapper->attacker.isLocal.use) {
@@ -1120,6 +1296,18 @@ typedef void (__fastcall * Panorama_CStyleProperty_Clone_t)(void * This, void * 
 
 bool g_b_In_Panorama_CLayoutFile_LoadFromFile = false;
 bool g_b_In_Panorama_CLayoutFile_LoadFromFile_HudReticle = false;
+bool g_b_In_Panorama_CLayoutFile_LoadFromFile_Radar = false;
+
+void PrintLoggedRadarStyleSet(const char * label, const std::set<std::string> & values) {
+	if (values.empty()) {
+		advancedfx::Message("[mirv_pov_radar_diag] %s: <none>\n", label);
+		return;
+	}
+
+	for (const auto & value : values) {
+		advancedfx::Message("[mirv_pov_radar_diag] %s: %s\n", label, value.c_str());
+	}
+}
 
 Panorama_CLayoutFile_LoadFromFile_t g_Org_Panorama_CLayoutFile_LoadFromFile = nullptr;
 Panorama_CStyleProperty_Parse_t g_Org_Panorama_CStylePropertyForegroundColor_Parse = nullptr;
@@ -1145,6 +1333,43 @@ void SetHudReticleWashColorCT(uint32_t value) {
 }
 
 int __fastcall My_Panorama_CLayoutFile_LoadFromFile(void * This, const char * pFilePath, unsigned char _unk02) {
+	const bool isRadarLayout = nullptr != pFilePath && (
+		0 == strcmp("panorama\\layout\\hud\\hudradar.xml", pFilePath)
+		|| 0 == strcmp("panorama\\layout\\mapoverview.xml", pFilePath)
+	);
+
+	if (nullptr != pFilePath) {
+		std::string filePath(pFilePath);
+		const bool isHudPath = std::string::npos != filePath.find("panorama\\layout\\hud\\");
+		const bool isRadarPath =
+			std::string::npos != filePath.find("radar")
+			|| std::string::npos != filePath.find("overview")
+			|| std::string::npos != filePath.find("map");
+
+		if ((isHudPath || isRadarPath) && g_LoggedPanoramaHudFiles.emplace(filePath).second) {
+			advancedfx::Message("[mirv_pov_radar_diag] panorama load: %s\n", pFilePath);
+		}
+
+		// Defer radar panel walking until after the layout load returned and the HUD root is available.
+		// Walking immediately during early layout load was previously observed to be unsafe.
+		if (!g_LoggedPanoramaRadarTree && (0 == filePath.compare("panorama\\layout\\hud\\hudradar.xml") || 0 == filePath.compare("panorama\\layout\\mapoverview.xml"))) {
+			g_PendingPanoramaRadarDiagnostics = true;
+		}
+	}
+
+	if (isRadarLayout) {
+		g_b_In_Panorama_CLayoutFile_LoadFromFile_Radar = true;
+		int result = g_Org_Panorama_CLayoutFile_LoadFromFile(This,pFilePath,_unk02);
+		g_b_In_Panorama_CLayoutFile_LoadFromFile_Radar = false;
+
+		if (g_PendingPanoramaRadarDiagnostics && !g_LoggedPanoramaRadarTree) {
+			g_PendingPanoramaRadarDiagnostics = false;
+			g_myPanoramaWrapper.printRadarDiagnosticsOnce();
+		}
+
+		return result;
+	}
+
 	if(0 == strcmp("panorama\\layout\\hud\\huddeathnotice.xml",pFilePath)) {		
 		g_b_In_Panorama_CLayoutFile_LoadFromFile = true;
 		int result = g_Org_Panorama_CLayoutFile_LoadFromFile(This,pFilePath,_unk02);
@@ -1161,11 +1386,23 @@ int __fastcall My_Panorama_CLayoutFile_LoadFromFile(void * This, const char * pF
 		return result;
 	}
 
-	return g_Org_Panorama_CLayoutFile_LoadFromFile(This,pFilePath,_unk02);
+	int result = g_Org_Panorama_CLayoutFile_LoadFromFile(This,pFilePath,_unk02);
+
+	if (g_PendingPanoramaRadarDiagnostics && !g_LoggedPanoramaRadarTree) {
+		g_PendingPanoramaRadarDiagnostics = false;
+		g_myPanoramaWrapper.printRadarDiagnosticsOnce();
+	}
+
+	return result;
 }
 
 unsigned char __fastcall My_Panorama_CStylePropertyForegroundColor_Parse(void * This, void* _unk01, const char * pValueStr) {
 	unsigned char result = g_Org_Panorama_CStylePropertyForegroundColor_Parse(This,_unk01,pValueStr);
+	if(g_b_In_Panorama_CLayoutFile_LoadFromFile_Radar && nullptr != pValueStr) {
+		if(g_LoggedPanoramaRadarForegroundStyles.emplace(pValueStr).second) {
+			advancedfx::Message("[mirv_pov_radar_diag] radar foreground style: %s\n", pValueStr);
+		}
+	}
 	if(g_b_In_Panorama_CLayoutFile_LoadFromFile) {
 		if(0 == strcmp(pValueStr,"#6f9ce6")) {
 			g_myPanoramaWrapper.CTcolor.pointer = (u_char*)This;
@@ -1179,6 +1416,11 @@ unsigned char __fastcall My_Panorama_CStylePropertyForegroundColor_Parse(void * 
 
 unsigned char __fastcall My_Panorama_CStylePropertyBackgroundColor_Parse(void * This, void* _unk01, const char * pValueStr) {
 	unsigned char result = g_Org_Panorama_CStylePropertyBackgroundColor_Parse(This,_unk01,pValueStr);
+	if(g_b_In_Panorama_CLayoutFile_LoadFromFile_Radar && nullptr != pValueStr) {
+		if(g_LoggedPanoramaRadarBackgroundStyles.emplace(pValueStr).second) {
+			advancedfx::Message("[mirv_pov_radar_diag] radar background style: %s\n", pValueStr);
+		}
+	}
 	if(g_b_In_Panorama_CLayoutFile_LoadFromFile) {
 		if(0 == strcmp(pValueStr,"#000000a0")) {
 			g_myPanoramaWrapper.BackgroundColor.pointer = (u_char*)This;
@@ -1192,6 +1434,11 @@ unsigned char __fastcall My_Panorama_CStylePropertyBackgroundColor_Parse(void * 
 
 unsigned char __fastcall My_Panorama_CStylePropertyBorder_Parse(void * This, void* _unk01, const char * pValueStr) {
 	unsigned char result = g_Org_Panorama_CStylePropertyBorder_Parse(This,_unk01,pValueStr);
+	if(g_b_In_Panorama_CLayoutFile_LoadFromFile_Radar && nullptr != pValueStr) {
+		if(g_LoggedPanoramaRadarBorderStyles.emplace(pValueStr).second) {
+			advancedfx::Message("[mirv_pov_radar_diag] radar border style: %s\n", pValueStr);
+		}
+	}
 	if(g_b_In_Panorama_CLayoutFile_LoadFromFile) {
 		if(0 == strcmp(pValueStr,"2px solid #e10000")) {
 			g_myPanoramaWrapper.BorderColor.pointer = (u_char*)This;
@@ -1203,6 +1450,11 @@ unsigned char __fastcall My_Panorama_CStylePropertyBorder_Parse(void * This, voi
 
 unsigned char __fastcall My_Panorama_CStylePropertyWashColor_Parse(void * This, void* _unk01, const char * pValueStr) {
 	unsigned char result = g_Org_Panorama_CStylePropertyWashColor_Parse(This,_unk01,pValueStr);
+	if(g_b_In_Panorama_CLayoutFile_LoadFromFile_Radar && nullptr != pValueStr) {
+		if(g_LoggedPanoramaRadarWashStyles.emplace(pValueStr).second) {
+			advancedfx::Message("[mirv_pov_radar_diag] radar wash style: %s\n", pValueStr);
+		}
+	}
 	if(g_b_In_Panorama_CLayoutFile_LoadFromFile_HudReticle) {
 		if(0 == strcmp(pValueStr,"rgb(150, 200, 250)")) {
 			g_pHudReticle_WashColor_CT.emplace((u_char*)This);

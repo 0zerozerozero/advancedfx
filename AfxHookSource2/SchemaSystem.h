@@ -54,10 +54,15 @@ struct ClientDllOffsets_t {
 		ptrdiff_t m_iszPlayerName = 0; // char[128]
 		ptrdiff_t m_steamID = 0; // uint64
 		ptrdiff_t m_hPawn = 0; // CHandle< C_CSPlayerPawnBase >
+		ptrdiff_t m_bIsLocalPlayerController = 0; // bool
+		ptrdiff_t m_bIsHLTV = 0; // bool
 	} CBasePlayerController;
 
 	struct CCSPlayerController {
 		ptrdiff_t m_sSanitizedPlayerName = 0; // CUtlString
+		ptrdiff_t m_hPlayerPawn = 0; // CHandle< C_CSPlayerPawn >
+		ptrdiff_t m_hObserverPawn = 0; // CHandle< C_CSObserverPawn >
+		ptrdiff_t m_iCompTeammateColor = 0; // int32
 	} CCSPlayerController;
 
 	struct C_BasePlayerPawn {
@@ -66,6 +71,15 @@ struct ClientDllOffsets_t {
 		ptrdiff_t m_pObserverServices = 0; // CPlayer_ObserverServices*
 		ptrdiff_t m_pCameraServices = 0; // CPlayer_CameraServices*
 	} C_BasePlayerPawn;
+
+	struct C_CSPlayerPawnBase {
+		ptrdiff_t m_entitySpottedState = 0; // EntitySpottedState_t
+	} C_CSPlayerPawnBase;
+
+	struct EntitySpottedState_t {
+		ptrdiff_t m_bSpotted = 0; // bool
+		ptrdiff_t m_bSpottedByMask = 0; // uint32[2]
+	} EntitySpottedState_t;
 
 	struct CPlayer_CameraServices {
 		ptrdiff_t m_hViewEntity = 0; // CHandle< CBaseEntity >
