@@ -192,7 +192,7 @@ void mirvPovRadarLocal_Console(advancedfx::ICommandArgs* args) {
 			if(0 == _stricmp(arg2, "off")) {
 				flags = 0;
 			} else if(0 == _stricmp(arg2, "all")) {
-				flags = kFakePovRadarExp_LocalPointer | kFakePovRadarExp_ForceSpotted | kFakePovRadarExp_ControllerFlags | kFakePovRadarExp_ObserverMode;
+				flags = kFakePovRadarExp_LocalPointer | kFakePovRadarExp_ForceSpotted | kFakePovRadarExp_ControllerFlags | kFakePovRadarExp_ObserverMode | kFakePovRadarExp_PatchShowAll;
 			} else {
 				const char * p = arg2;
 				while(*p) {
@@ -201,11 +201,21 @@ void mirvPovRadarLocal_Console(advancedfx::ICommandArgs* args) {
 					else if(ch == 'b' || ch == 'B') flags |= kFakePovRadarExp_ForceSpotted;
 					else if(ch == 'c' || ch == 'C') flags |= kFakePovRadarExp_ControllerFlags;
 					else if(ch == 'd' || ch == 'D') flags |= kFakePovRadarExp_ObserverMode;
+					else if(ch == 'e' || ch == 'E') flags |= kFakePovRadarExp_PatchShowAll;
 					p++;
 				}
 			}
 
+			unsigned int oldFlags = GetFakePovRadarExperimentFlags();
 			SetFakePovRadarExperimentFlags(flags);
+
+			if((flags & kFakePovRadarExp_PatchShowAll) && !(oldFlags & kFakePovRadarExp_PatchShowAll)) {
+				HMODULE hClient = GetModuleHandleW(L"client.dll");
+				FakePovRadar_PatchRadarShowAll(hClient);
+			} else if(!(flags & kFakePovRadarExp_PatchShowAll) && (oldFlags & kFakePovRadarExp_PatchShowAll)) {
+				FakePovRadar_UnpatchRadarShowAll();
+			}
+
 			advancedfx::Message("%s experiments set to: 0x%X\n", arg0, flags);
 			return;
 		}
@@ -225,6 +235,7 @@ void mirvPovRadarLocal_Console(advancedfx::ICommandArgs* args) {
 				if(expFlags & kFakePovRadarExp_ForceSpotted) expStr += "b";
 				if(expFlags & kFakePovRadarExp_ControllerFlags) expStr += "c";
 				if(expFlags & kFakePovRadarExp_ObserverMode) expStr += "d";
+				if(expFlags & kFakePovRadarExp_PatchShowAll) expStr += "e";
 			}
 
 			advancedfx::Message(
@@ -234,6 +245,7 @@ void mirvPovRadarLocal_Console(advancedfx::ICommandArgs* args) {
 				"Configured controller index: %i\n"
 				"Experiments: %s\n"
 				"LocalPlayerControllerPointer: %s (addr=%p)\n"
+				"RadarShowAllPatch: %s\n"
 				, arg0
 				, IsFakePovRadarEnabled() ? "yes" : "no"
 				, GetFakePovRadarAutoSync() ? "auto (follow observer target)" : "manual"
@@ -241,6 +253,7 @@ void mirvPovRadarLocal_Console(advancedfx::ICommandArgs* args) {
 				, expStr.c_str()
 				, FakePovRadar_HasLocalPlayerControllerPointer() ? "resolved" : "unresolved"
 				, FakePovRadar_GetLocalPlayerControllerPointerAddress()
+				, FakePovRadar_IsRadarShowAllPatched() ? "active" : "inactive"
 			);
 
 			CEntityInstance * realLocal = GetRealSplitScreenPlayer(0);
@@ -280,14 +293,21 @@ void mirvPovRadarLocal_Console(advancedfx::ICommandArgs* args) {
 
 		if(0 == _stricmp(arg1, "experiments") || 0 == _stricmp(arg1, "exp")) {
 			advancedfx::Message(
-				"Usage: %s experiments <off|a|b|c|d|abcd|all>\n"
+				"Usage: %s experiments <off|a|b|c|d|e|abcde|all>\n"
 				"  off  - No experiments (baseline fake-local only)\n"
-				"  a    - Patch LocalPlayerControllerPointer\n"
-				"  b    - Force enemy m_bSpotted\n"
-				"  c    - Patch m_bIsLocalPlayerController / m_bIsHLTV\n"
-				"  d    - Patch m_iObserverMode to OBS_MODE_NONE\n"
-				"  abcd - All experiments (or use 'all')\n"
-				"  Combine letters freely: ab, acd, bd, etc.\n"
+				"  a    - Patch LocalPlayerControllerPointer (swap global ptr to fake controller)\n"
+				"  b    - Force teammate m_bSpotted (teammates always visible on radar)\n"
+				"  c    - Patch m_bIsLocalPlayerController / m_bIsHLTV [CRASHES - do not use]\n"
+				"  d    - Patch m_iObserverMode to OBS_MODE_NONE (pretend not spectating)\n"
+				"  e    - Radar + HUD POV patches:\n"
+				"           Hook GetPlayerSlotController (radar follows observed player)\n"
+				"           Hook GetLocalPlayerController (radar identity)\n"
+				"           Patch 1: jz->jmp (skip spectator target write)\n"
+				"           Patch 2: NOP show-all flag (hide enemies not spotted)\n"
+				"           Patch 3: HUD spectator check 01->FF (POV health/ammo)\n"
+				"           Patch 4: Hide spectator player panel (HudSpecplayerRoot)\n"
+				"  Recommended: abde (skip c which crashes)\n"
+				"  Combine letters freely: ab, acd, be, etc.\n"
 				"Current: 0x%X\n"
 				, arg0
 				, GetFakePovRadarExperimentFlags()

@@ -1517,6 +1517,8 @@ void  new_CS2_Client_FrameStageNotify(void* This, SOURCESDK::CS2::ClientFrameSta
 
 	AfxHookSource2Rs_Engine_OnClientFrameStageNotify(curStage, true);
 
+	FakePovRadar_SyncObserverPawnPosition();
+
 	if(curStage == SOURCESDK::CS2::FRAME_RENDER_PASS) {
 		FakePovRadar_BeginClientFrameContext();
 	}

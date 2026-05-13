@@ -37,6 +37,7 @@ enum FakePovRadarExperimentFlags : unsigned int {
     kFakePovRadarExp_ForceSpotted = 1 << 1,
     kFakePovRadarExp_ControllerFlags = 1 << 2,
     kFakePovRadarExp_ObserverMode = 1 << 3,
+    kFakePovRadarExp_PatchShowAll = 1 << 4,
 };
 
 void SetFakePovRadarExperimentFlags(unsigned int flags);
@@ -51,6 +52,10 @@ void * GetHudRadarVtable();
 int GetHudRadarHookSlot();
 long GetHudRadarHookCallCount();
 
+bool FakePovRadar_PatchRadarShowAll(HMODULE clientDll);
+void FakePovRadar_UnpatchRadarShowAll();
+bool FakePovRadar_IsRadarShowAllPatched();
+
 int CEntityInstance_GetCompTeammateColor(class CEntityInstance * controller);
 
 bool IsFakePovRadarFrameContextActive();
@@ -63,6 +68,7 @@ void FakePovRadar_EndClientFrameContext();
 
 void FakePovRadar_RestoreSpottedState();
 void FakePovRadar_ReWriteSpotted();
+void FakePovRadar_SyncObserverPawnPosition();
 
 class CAfxEntityInstanceRef;
 

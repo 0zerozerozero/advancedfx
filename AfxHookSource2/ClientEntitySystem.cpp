@@ -1046,6 +1046,49 @@ void FakePovRadar_ReWriteSpotted() {
     }
 }
 
+void FakePovRadar_SyncObserverPawnPosition() {
+    if(!IsFakePovRadarEnabled()) return;
+
+    CEntityInstance * fakeController = GetFakePovRadarController();
+    if(nullptr == fakeController) return;
+
+    CEntityInstance * realController = GetRealSplitScreenPlayer(0);
+    if(nullptr == realController || realController == fakeController) return;
+
+    auto fakePawnHandle = fakeController->GetPlayerPawnHandle();
+    if(!fakePawnHandle.IsValid()) return;
+    CEntityInstance * fakePawn = GetEntityFromIndex(fakePawnHandle.GetEntryIndex());
+    if(nullptr == fakePawn) return;
+
+    if(0 == g_clientDllOffsets.C_BaseEntity.m_pGameSceneNode || 0 == g_clientDllOffsets.CGameSceneNode.m_vecAbsOrigin) return;
+
+    auto fakeSceneNode = *(u_char**)((u_char*)fakePawn + g_clientDllOffsets.C_BaseEntity.m_pGameSceneNode);
+    if(nullptr == fakeSceneNode) return;
+    float * fakePos = (float*)(fakeSceneNode + g_clientDllOffsets.CGameSceneNode.m_vecAbsOrigin);
+
+    auto realControllerSceneNode = *(u_char**)((u_char*)realController + g_clientDllOffsets.C_BaseEntity.m_pGameSceneNode);
+    if(nullptr != realControllerSceneNode) {
+        float * realControllerPos = (float*)(realControllerSceneNode + g_clientDllOffsets.CGameSceneNode.m_vecAbsOrigin);
+        realControllerPos[0] = fakePos[0];
+        realControllerPos[1] = fakePos[1];
+        realControllerPos[2] = fakePos[2];
+    }
+
+    auto realPawnHandle = realController->GetPlayerPawnHandle();
+    if(realPawnHandle.IsValid()) {
+        CEntityInstance * realPawn = GetEntityFromIndex(realPawnHandle.GetEntryIndex());
+        if(nullptr != realPawn) {
+            auto realPawnSceneNode = *(u_char**)((u_char*)realPawn + g_clientDllOffsets.C_BaseEntity.m_pGameSceneNode);
+            if(nullptr != realPawnSceneNode) {
+                float * realPawnPos = (float*)(realPawnSceneNode + g_clientDllOffsets.CGameSceneNode.m_vecAbsOrigin);
+                realPawnPos[0] = fakePos[0];
+                realPawnPos[1] = fakePos[1];
+                realPawnPos[2] = fakePos[2];
+            }
+        }
+    }
+}
+
 struct MirvEntityEntry {
 	int entryIndex;
 	int handle;
@@ -1357,6 +1400,312 @@ void * GetHudRadarVtable() {
 
 int GetHudRadarHookSlot() {
     return g_HudRadarHookSlot;
+}
+
+// ============================================================================
+// Approach C: Hook GetLocalPlayerController + byte-patch spectator mode
+// ============================================================================
+
+// Hook sub_180AD5580 (GetObserverMode) — returns observer mode for slot 0.
+// This function calls sub_1808E0E70(0) directly, bypassing our
+// GetLocalPlayerController hook. The radar uses it to decide whether to
+// show spectator-mode behavior. By returning 0 (OBS_MODE_NONE) when our
+// POV radar is active, the radar treats us as the observed player directly.
+typedef int (__fastcall * GetObserverMode_t)();
+static GetObserverMode_t g_Org_GetObserverMode = nullptr;
+static bool g_bGetObserverModeHooked = false;
+
+static int __fastcall New_GetObserverMode() {
+    if(IsFakePovRadarEnabled() && g_FakePovRadarFrameContextState.active) {
+        return 0; // OBS_MODE_NONE — pretend we're not spectating (frame context only)
+    }
+    return g_Org_GetObserverMode();
+}
+
+// Hook sub_180AD55C0 (GetObserverTarget) — returns observer target handle for slot 0.
+// Like GetObserverMode, this calls sub_1808E0E70(0) directly, bypassing our
+// GetLocalPlayerController hook. By returning INVALID_EHANDLE during frame context,
+// the radar won't try to use a spectator target position.
+typedef unsigned int (__fastcall * GetObserverTarget_fn_t)(void* thisPtr);
+static GetObserverTarget_fn_t g_Org_GetObserverTarget_fn = nullptr;
+static bool g_bGetObserverTargetHooked = false;
+
+static unsigned int __fastcall New_GetObserverTarget_fn(void* thisPtr) {
+    if(IsFakePovRadarEnabled() && g_FakePovRadarFrameContextState.active) {
+        return 0xFFFFFFFF; // INVALID_EHANDLE_INDEX — no observer target (frame context only)
+    }
+    return g_Org_GetObserverTarget_fn(thisPtr);
+}
+
+// Hook sub_180BD7DE0 (GetLocalPlayerController) to return fake controller
+// during radar update, replacing unsafe direct memory modification of
+// m_bIsLocalPlayerController / m_bIsHLTV (old flag c).
+typedef CEntityInstance * (__fastcall * GetLocalPlayerController_t)();
+static GetLocalPlayerController_t g_Org_GetLocalPlayerController = nullptr;
+static bool g_bGetLocalPlayerControllerHooked = false;
+
+static CEntityInstance * __fastcall New_GetLocalPlayerController() {
+    if(IsFakePovRadarEnabled()) {
+        CEntityInstance * fake = GetFakePovRadarController();
+        if(fake) return fake;
+    }
+    return g_Org_GetLocalPlayerController();
+}
+
+// Hook sub_180BD7830 (GetEffectiveLocalPlayer for HUD) — this function is
+// used by the HUD to determine spectator state. It calls sub_1808E0E70(0)
+// directly, bypassing our GetLocalPlayerController hook.
+// Instead of hooking the function (which crashes during demo transitions),
+// we patch the HUD's spectator check: cmp byte ptr [rax+3EBh], 1 → 0xFF
+static uint8_t * g_pHudSpectatorCheckPatchAddr = nullptr;
+static uint8_t g_HudSpectatorCheckOrigByte = 0;
+static bool g_bHudSpectatorCheckPatched = false;
+
+// Patch 1: Force [rbx+174F0h] = 0 (not spectating any target)
+//   Original: test al, al / jz short +0A  (84 C0 74 0A)
+//   Patched:  test al, al / jmp short +0A (84 C0 EB 0A)
+static uint8_t * g_pRadarSpectatorTargetPatchAddr = nullptr;
+static uint8_t g_RadarSpectatorTargetOrigByte = 0;
+static bool g_bRadarSpectatorTargetPatched = false;
+
+// Patch 4: Hide spectator player panel (HudSpecplayerRoot--visible always false)
+//   Original: mov sil, 1  (40 B6 01)
+//   Patched:  xor sil, sil (40 32 F6)
+//   Pattern context: test r14,r14 / jz +9 / test bl,bl / jnz +5 / [PATCH HERE] / jmp +3 / xor sil,sil
+static uint8_t * g_pHudSpecPanelPatchAddr = nullptr;
+static uint8_t g_HudSpecPanelOrigBytes[3] = {0};
+static bool g_bHudSpecPanelPatched = false;
+
+// Patch 2: NOP "or byte ptr [rbx+17760h], 1" (prevent show-all flag)
+static uint8_t * g_pRadarShowAllPatchAddr = nullptr;
+static uint8_t g_RadarShowAllOriginalBytes[7] = {0};
+static bool g_bRadarShowAllPatched = false;
+
+bool FakePovRadar_PatchRadarShowAll(HMODULE clientDll) {
+    if(g_bRadarShowAllPatched && g_bGetLocalPlayerControllerHooked && g_bHudSpectatorCheckPatched && g_bHudSpecPanelPatched && g_bGetObserverModeHooked && g_bGetObserverTargetHooked) return true;
+    if(nullptr == clientDll) {
+        advancedfx::Message("[mirv_pov_radar_patch] No client.dll handle\n");
+        return false;
+    }
+
+    // --- Hook GetObserverMode (sub_180AD5580) — return OBS_MODE_NONE during frame context ---
+    if(!g_bGetObserverModeHooked) {
+        size_t funcAddr = getAddress(clientDll, "48 83 EC 28 33 C9 E8 ?? ?? ?? ?? 48 85 C0 74 ?? 48 8B 88 F8 11 00 00");
+        if(0 == funcAddr) {
+            advancedfx::Message("[mirv_pov_radar_patch] GetObserverMode pattern not found\n");
+        } else {
+            g_Org_GetObserverMode = (GetObserverMode_t)funcAddr;
+            DetourTransactionBegin();
+            DetourUpdateThread(GetCurrentThread());
+            DetourAttach(&(PVOID&)g_Org_GetObserverMode, New_GetObserverMode);
+            if(NO_ERROR == DetourTransactionCommit()) {
+                g_bGetObserverModeHooked = true;
+                advancedfx::Message("[mirv_pov_radar_patch] Hooked GetObserverMode at %p\n", (void*)funcAddr);
+            } else {
+                advancedfx::Message("[mirv_pov_radar_patch] GetObserverMode detour failed\n");
+                g_Org_GetObserverMode = nullptr;
+            }
+        }
+    }
+
+    // --- Hook GetObserverTarget (sub_180AD55C0) — return INVALID_EHANDLE during frame context ---
+    if(!g_bGetObserverTargetHooked) {
+        size_t funcAddr = getAddress(clientDll, "40 53 48 83 EC 20 48 8B D9 33 C9 E8 ?? ?? ?? ?? 48 85 C0 74");
+        if(0 == funcAddr) {
+            advancedfx::Message("[mirv_pov_radar_patch] GetObserverTarget pattern not found\n");
+        } else {
+            g_Org_GetObserverTarget_fn = (GetObserverTarget_fn_t)funcAddr;
+            DetourTransactionBegin();
+            DetourUpdateThread(GetCurrentThread());
+            DetourAttach(&(PVOID&)g_Org_GetObserverTarget_fn, New_GetObserverTarget_fn);
+            if(NO_ERROR == DetourTransactionCommit()) {
+                g_bGetObserverTargetHooked = true;
+                advancedfx::Message("[mirv_pov_radar_patch] Hooked GetObserverTarget at %p\n", (void*)funcAddr);
+            } else {
+                advancedfx::Message("[mirv_pov_radar_patch] GetObserverTarget detour failed\n");
+                g_Org_GetObserverTarget_fn = nullptr;
+            }
+        }
+    }
+
+    // --- Hook GetLocalPlayerController to return fake controller during radar update ---
+    if(!g_bGetLocalPlayerControllerHooked) {
+        size_t funcAddr = getAddress(clientDll, "40 53 48 83 EC 20 33 C9 E8 ?? ?? ?? ?? 48 8B D8 48 85 C0 74");
+        if(0 == funcAddr) {
+            advancedfx::Message("[mirv_pov_radar_patch] GetLocalPlayerController pattern not found\n");
+        } else {
+            g_Org_GetLocalPlayerController = (GetLocalPlayerController_t)funcAddr;
+            DetourTransactionBegin();
+            DetourUpdateThread(GetCurrentThread());
+            DetourAttach(&(PVOID&)g_Org_GetLocalPlayerController, New_GetLocalPlayerController);
+            if(NO_ERROR == DetourTransactionCommit()) {
+                g_bGetLocalPlayerControllerHooked = true;
+                advancedfx::Message("[mirv_pov_radar_patch] Hooked GetLocalPlayerController at %p\n", (void*)funcAddr);
+            } else {
+                advancedfx::Message("[mirv_pov_radar_patch] GetLocalPlayerController detour failed\n");
+                g_Org_GetLocalPlayerController = nullptr;
+            }
+        }
+    }
+
+    // --- Patch 3: HUD spectator check (cmp byte ptr [rax+3EBh], 1 → 0xFF) ---
+    if(!g_bHudSpectatorCheckPatched) {
+        size_t match3 = getAddress(clientDll, "80 B8 EB 03 00 00 01 48 8B 11 41 0F 94 C0");
+        if(0 == match3) {
+            advancedfx::Message("[mirv_pov_radar_patch] HUD spectator check pattern not found\n");
+        } else {
+            uint8_t * patchAddr = (uint8_t *)(match3 + 6);
+            g_HudSpectatorCheckOrigByte = *patchAddr;
+
+            DWORD oldProtect;
+            if(VirtualProtect(patchAddr, 1, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+                *patchAddr = 0xFF;
+                DWORD dummy;
+                VirtualProtect(patchAddr, 1, oldProtect, &dummy);
+                g_pHudSpectatorCheckPatchAddr = patchAddr;
+                g_bHudSpectatorCheckPatched = true;
+                advancedfx::Message("[mirv_pov_radar_patch] Patched HUD spectator check at %p (0x01->0xFF)\n", (void*)patchAddr);
+            } else {
+                advancedfx::Message("[mirv_pov_radar_patch] VirtualProtect failed for HUD spectator patch (error %lu)\n", GetLastError());
+            }
+        }
+    }
+
+    // --- Patch 4: Hide spectator player panel (mov sil,1 → xor sil,sil) ---
+    if(!g_bHudSpecPanelPatched) {
+        size_t match4 = getAddress(clientDll, "4D 85 F6 74 09 84 DB 75 05 40 B6 01 EB 03 40 32 F6");
+        if(0 == match4) {
+            advancedfx::Message("[mirv_pov_radar_patch] HUD spec panel pattern not found\n");
+        } else {
+            uint8_t * patchAddr = (uint8_t *)(match4 + 9);
+            memcpy(g_HudSpecPanelOrigBytes, patchAddr, 3);
+
+            DWORD oldProtect;
+            if(VirtualProtect(patchAddr, 3, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+                patchAddr[0] = 0x40;
+                patchAddr[1] = 0x32;
+                patchAddr[2] = 0xF6;
+                DWORD dummy;
+                VirtualProtect(patchAddr, 3, oldProtect, &dummy);
+                g_pHudSpecPanelPatchAddr = patchAddr;
+                g_bHudSpecPanelPatched = true;
+                advancedfx::Message("[mirv_pov_radar_patch] Patched HUD spec panel at %p (mov sil,1 -> xor sil,sil)\n", (void*)patchAddr);
+            } else {
+                advancedfx::Message("[mirv_pov_radar_patch] VirtualProtect failed for HUD spec panel patch (error %lu)\n", GetLastError());
+            }
+        }
+    }
+
+    // --- Patch 1: DISABLED — letting radar use spectator target position for correct centering ---
+    if(!g_bRadarSpectatorTargetPatched) {
+        g_bRadarSpectatorTargetPatched = true;
+    }
+
+    // --- Patch 2: NOP the "or byte ptr [rbx+17760h], 1" instruction ---
+    if(!g_bRadarShowAllPatched) {
+        size_t match2 = getAddress(clientDll, "74 ?? 80 8B 60 77 01 00 01 EB");
+        if(0 == match2) {
+            advancedfx::Message("[mirv_pov_radar_patch] Spectator show-all instruction not found\n");
+        } else {
+            uint8_t * patchAddr = (uint8_t *)(match2 + 2);
+            memcpy(g_RadarShowAllOriginalBytes, patchAddr, 7);
+
+            DWORD oldProtect;
+            if(VirtualProtect(patchAddr, 7, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+                memset(patchAddr, 0x90, 7);
+                DWORD dummy;
+                VirtualProtect(patchAddr, 7, oldProtect, &dummy);
+                g_pRadarShowAllPatchAddr = patchAddr;
+                g_bRadarShowAllPatched = true;
+                advancedfx::Message("[mirv_pov_radar_patch] Patched show-all NOP at %p (7 bytes)\n", (void*)patchAddr);
+            } else {
+                advancedfx::Message("[mirv_pov_radar_patch] VirtualProtect failed for patch 2 (error %lu)\n", GetLastError());
+            }
+        }
+    }
+
+    return g_bRadarSpectatorTargetPatched || g_bRadarShowAllPatched || g_bGetLocalPlayerControllerHooked;
+}
+
+void FakePovRadar_UnpatchRadarShowAll() {
+    if(g_bGetObserverModeHooked && g_Org_GetObserverMode) {
+        DetourTransactionBegin();
+        DetourUpdateThread(GetCurrentThread());
+        DetourDetach(&(PVOID&)g_Org_GetObserverMode, New_GetObserverMode);
+        DetourTransactionCommit();
+        g_bGetObserverModeHooked = false;
+        advancedfx::Message("[mirv_pov_radar_patch] Unhooked GetObserverMode\n");
+    }
+
+    if(g_bGetObserverTargetHooked && g_Org_GetObserverTarget_fn) {
+        DetourTransactionBegin();
+        DetourUpdateThread(GetCurrentThread());
+        DetourDetach(&(PVOID&)g_Org_GetObserverTarget_fn, New_GetObserverTarget_fn);
+        DetourTransactionCommit();
+        g_bGetObserverTargetHooked = false;
+        advancedfx::Message("[mirv_pov_radar_patch] Unhooked GetObserverTarget\n");
+    }
+
+    if(g_bGetLocalPlayerControllerHooked && g_Org_GetLocalPlayerController) {
+        DetourTransactionBegin();
+        DetourUpdateThread(GetCurrentThread());
+        DetourDetach(&(PVOID&)g_Org_GetLocalPlayerController, New_GetLocalPlayerController);
+        DetourTransactionCommit();
+        g_bGetLocalPlayerControllerHooked = false;
+        advancedfx::Message("[mirv_pov_radar_patch] Unhooked GetLocalPlayerController\n");
+    }
+
+    if(g_bHudSpectatorCheckPatched && g_pHudSpectatorCheckPatchAddr) {
+        DWORD oldProtect;
+        if(VirtualProtect(g_pHudSpectatorCheckPatchAddr, 1, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+            *g_pHudSpectatorCheckPatchAddr = g_HudSpectatorCheckOrigByte;
+            DWORD dummy;
+            VirtualProtect(g_pHudSpectatorCheckPatchAddr, 1, oldProtect, &dummy);
+        }
+        g_bHudSpectatorCheckPatched = false;
+        g_pHudSpectatorCheckPatchAddr = nullptr;
+        advancedfx::Message("[mirv_pov_radar_patch] Restored HUD spectator check\n");
+    }
+
+    if(g_bHudSpecPanelPatched && g_pHudSpecPanelPatchAddr) {
+        DWORD oldProtect;
+        if(VirtualProtect(g_pHudSpecPanelPatchAddr, 3, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+            memcpy(g_pHudSpecPanelPatchAddr, g_HudSpecPanelOrigBytes, 3);
+            DWORD dummy;
+            VirtualProtect(g_pHudSpecPanelPatchAddr, 3, oldProtect, &dummy);
+        }
+        g_bHudSpecPanelPatched = false;
+        g_pHudSpecPanelPatchAddr = nullptr;
+        advancedfx::Message("[mirv_pov_radar_patch] Restored HUD spec panel\n");
+    }
+
+    if(g_bRadarSpectatorTargetPatched && g_pRadarSpectatorTargetPatchAddr) {
+        DWORD oldProtect;
+        if(VirtualProtect(g_pRadarSpectatorTargetPatchAddr, 1, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+            *g_pRadarSpectatorTargetPatchAddr = g_RadarSpectatorTargetOrigByte;
+            DWORD dummy;
+            VirtualProtect(g_pRadarSpectatorTargetPatchAddr, 1, oldProtect, &dummy);
+        }
+        g_bRadarSpectatorTargetPatched = false;
+        g_pRadarSpectatorTargetPatchAddr = nullptr;
+        advancedfx::Message("[mirv_pov_radar_patch] Restored spectator target jz\n");
+    }
+
+    if(g_bRadarShowAllPatched && g_pRadarShowAllPatchAddr) {
+        DWORD oldProtect;
+        if(VirtualProtect(g_pRadarShowAllPatchAddr, 7, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+            memcpy(g_pRadarShowAllPatchAddr, g_RadarShowAllOriginalBytes, 7);
+            DWORD dummy;
+            VirtualProtect(g_pRadarShowAllPatchAddr, 7, oldProtect, &dummy);
+        }
+        g_bRadarShowAllPatched = false;
+        g_pRadarShowAllPatchAddr = nullptr;
+        advancedfx::Message("[mirv_pov_radar_patch] Restored show-all instruction\n");
+    }
+}
+
+bool FakePovRadar_IsRadarShowAllPatched() {
+    return g_bRadarShowAllPatched && g_bHudSpectatorCheckPatched && g_bHudSpecPanelPatched && g_bGetObserverModeHooked && g_bGetObserverTargetHooked;
 }
 
 extern "C" int afx_hook_source2_get_entity_ref_player_controller_handle(void * pRef) {
