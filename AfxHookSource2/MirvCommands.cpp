@@ -7,8 +7,10 @@
 #include "SchemaSystem.h"
 
 #include "../deps/release/prop/cs2/sdk_src/public/cdll_int.h"
+#include "../deps/release/prop/cs2/sdk_src/public/icvar.h"
 
 #include <string>
+#include <cstring>
 
 #include <algorithm>
 
@@ -17,6 +19,95 @@ bool g_bHookedMirvCommands = false;
 static const char * MIRV_POV_LOCAL_BUILD = "mirv_pov-local-20260619-voicehud";
 
 extern SOURCESDK::CS2::ISource2EngineToClient * g_pEngineToClient;
+
+struct MirvPovCvarSetting {
+	const char * name;
+	int value;
+	SOURCESDK::CS2::ConVarHandle handle;
+	alignas(SOURCESDK::CS2::CVValue_t) unsigned char previousValue[sizeof(SOURCESDK::CS2::CVValue_t)];
+	bool previousValueSaved = false;
+};
+
+static MirvPovCvarSetting g_MirvPovCvarSettings[] = {
+	{ "cl_drawhud_force_radar", 1 },
+	{ "cl_radar_square_when_spectating", 0 },
+	{ "cl_radar_square_always", 0 },
+	{ "cl_radar_show_all_players_when_spectating", 0 },
+	{ "cl_trueview_show_status", 0 },
+	{ "r_show_build_info", 0 }
+};
+
+static void MirvPov_CopyCvarValue(SOURCESDK::CS2::CVValue_t & dst, const SOURCESDK::CS2::CVValue_t & src)
+{
+	std::memcpy(&dst, &src, sizeof(dst));
+}
+
+static void MirvPov_CopyCvarValue(unsigned char * dst, const SOURCESDK::CS2::CVValue_t & src)
+{
+	std::memcpy(dst, &src, sizeof(src));
+}
+
+static SOURCESDK::CS2::CVValue_t * MirvPov_AsCvarValue(unsigned char * value)
+{
+	return reinterpret_cast<SOURCESDK::CS2::CVValue_t *>(value);
+}
+
+static void MirvPov_SetCvar(MirvPovCvarSetting & setting, int value, bool savePreviousValue)
+{
+	if(!SOURCESDK::CS2::g_pCVar) return;
+
+	if(!setting.handle.IsValid()) setting.handle = SOURCESDK::CS2::g_pCVar->FindConVar(setting.name, false);
+	if(!setting.handle.IsValid()) return;
+
+	SOURCESDK::CS2::Cvar_s * cvar = SOURCESDK::CS2::g_pCVar->GetCvar(setting.handle.Get());
+	if(!cvar) return;
+
+	SOURCESDK::CS2::CVValue_t newValue = {};
+	SOURCESDK::CS2::CVValue_t oldValue = {};
+	MirvPov_CopyCvarValue(newValue, cvar->m_Value);
+	MirvPov_CopyCvarValue(oldValue, cvar->m_Value);
+	newValue.m_i32Value = value;
+
+	if(savePreviousValue && !setting.previousValueSaved) {
+		MirvPov_CopyCvarValue(setting.previousValue, oldValue);
+		setting.previousValueSaved = true;
+	}
+
+	if(oldValue.m_i32Value == value) return;
+
+	MirvPov_CopyCvarValue(cvar->m_Value, newValue);
+	SOURCESDK::CS2::g_pCVar->CallChangeCallback(setting.handle, 0, &newValue, &oldValue);
+}
+
+static void MirvPov_ApplyCvarSettings()
+{
+	for(MirvPovCvarSetting & setting : g_MirvPovCvarSettings) {
+		MirvPov_SetCvar(setting, setting.value, true);
+	}
+}
+
+static void MirvPov_RestoreCvarSettings()
+{
+	if(!SOURCESDK::CS2::g_pCVar) return;
+
+	for(MirvPovCvarSetting & setting : g_MirvPovCvarSettings) {
+		if(!setting.previousValueSaved) continue;
+
+		if(!setting.handle.IsValid()) setting.handle = SOURCESDK::CS2::g_pCVar->FindConVar(setting.name, false);
+		if(setting.handle.IsValid()) {
+			SOURCESDK::CS2::Cvar_s * cvar = SOURCESDK::CS2::g_pCVar->GetCvar(setting.handle.Get());
+			if(cvar) {
+				SOURCESDK::CS2::CVValue_t oldValue = {};
+				SOURCESDK::CS2::CVValue_t * previousValue = MirvPov_AsCvarValue(setting.previousValue);
+				MirvPov_CopyCvarValue(oldValue, cvar->m_Value);
+				MirvPov_CopyCvarValue(cvar->m_Value, *previousValue);
+				SOURCESDK::CS2::g_pCVar->CallChangeCallback(setting.handle, 0, previousValue, &oldValue);
+			}
+		}
+
+		setting.previousValueSaved = false;
+	}
+}
 
 float g_fNoFlashAmount = 0.0f;
 
@@ -100,13 +191,14 @@ CON_COMMAND(mirv_pov, "POV HUD with radar showing teammates. Offline demo playba
 		if(0 == _stricmp(arg1, "true") || 0 == _stricmp(arg1, "1") || 0 == _stricmp(arg1, "on")) {
 			HMODULE hClient = GetModuleHandleW(L"client.dll");
 			if(g_pEngineToClient) g_pEngineToClient->ExecuteClientCmd(0, "mirv_script_load mirv_script_voice.js", true);
+			MirvPov_ApplyCvarSettings();
 			MirvPov_Enable(hClient);
-			if(g_pEngineToClient) g_pEngineToClient->ExecuteClientCmd(0, "cl_teammate_colors_show 1", true);
 			advancedfx::Message("mirv_pov enabled. Use mp_forcecamera 0 for cross-team switching.\n");
 			return;
 		}
 		if(0 == _stricmp(arg1, "false") || 0 == _stricmp(arg1, "0") || 0 == _stricmp(arg1, "off")) {
 			MirvPov_Disable();
+			MirvPov_RestoreCvarSettings();
 			advancedfx::Message("mirv_pov disabled.\n");
 			return;
 		}
@@ -117,7 +209,7 @@ CON_COMMAND(mirv_pov, "POV HUD with radar showing teammates. Offline demo playba
 		"  false - Disable and restore original behavior\n"
 		"Current: %s\n"
 		"Build: %s\n"
-		"Note: Use mp_forcecamera 0 for cross-team switching. Offline demo only. Enables cl_teammate_colors_show 1 once.\n"
+		"Note: Use mp_forcecamera 0 for cross-team switching. Offline demo only. Restores POV cvars on disable.\n"
 		, MirvPov_IsEnabled() ? "enabled" : "disabled", MIRV_POV_LOCAL_BUILD
 	);
 }
