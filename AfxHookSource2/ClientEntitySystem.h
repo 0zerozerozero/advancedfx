@@ -15,6 +15,7 @@ bool Hook_GetSplitScreenPlayer( void* pAddr);
 
 class CEntityInstance * GetEntityFromIndex(int index);
 class CEntityInstance * GetRealSplitScreenPlayer(int slot);
+class CEntityInstance * GetEffectiveSplitScreenPlayer(int slot);
 bool MirvPov_IsEnabled();
 void MirvPov_Enable(HMODULE clientDll);
 void MirvPov_Disable();
