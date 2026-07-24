@@ -1,5 +1,6 @@
 #include "MirvCommands.h"
 #include "ClientEntitySystem.h"
+#include "MirvPovTeamID.h"
 
 #include "../shared/StringTools.h"
 
@@ -99,10 +100,14 @@ CON_COMMAND(mirv_pov, "POV HUD with radar showing teammates. Offline demo playba
 		const char * arg1 = args->ArgV(1);
 		if(0 == _stricmp(arg1, "true") || 0 == _stricmp(arg1, "1") || 0 == _stricmp(arg1, "on")) {
 			HMODULE hClient = GetModuleHandleW(L"client.dll");
+			MirvPovTeamID_EnableDebug();
+			MirvPovTeamID_ResetDebug();
 			if(g_pEngineToClient) g_pEngineToClient->ExecuteClientCmd(0, "mirv_script_load mirv_script_voice.js", true);
+			MirvPovTeamID_ApplyPatches(hClient);
 			MirvPov_Enable(hClient);
 			if(g_pEngineToClient) g_pEngineToClient->ExecuteClientCmd(0, "cl_teammate_colors_show 1", true);
-			advancedfx::Message("mirv_pov enabled. Use mp_forcecamera 0 for cross-team switching.\n");
+			MirvPovTeamID_PrintStatus();
+			advancedfx::Message("mirv_pov enabled. Use mp_forcecamera 0 for cross-team switching. TeamID debug counters are enabled and reset.\n");
 			return;
 		}
 		if(0 == _stricmp(arg1, "false") || 0 == _stricmp(arg1, "0") || 0 == _stricmp(arg1, "off")) {
