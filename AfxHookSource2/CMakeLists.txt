@@ -227,6 +227,9 @@ target_sources(${PROJECT_NAME} PRIVATE
     MirvPovVoice.cpp
     MirvPovVoice.h
 
+    MirvPovTeamID.cpp
+    MirvPovTeamID.h
+
     ConsoleRs.cpp
     CVarRs.cpp
 
