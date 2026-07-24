@@ -519,6 +519,106 @@ static void * GetCameraServicesPtr(CEntityInstance * pawn) {
     return *(void **)((unsigned char *)pawn + g_clientDllOffsets.C_BasePlayerPawn.m_pCameraServices);
 }
 
+CEntityInstance * GetFakePovRadarController();
+
+static CEntityInstance * GetPawnFromController(CEntityInstance * controller) {
+    if(nullptr == controller || !controller->IsPlayerController()) return nullptr;
+    auto pawnHandle = controller->GetPlayerPawnHandle();
+    if(!pawnHandle.IsValid()) return nullptr;
+    return GetEntityFromIndex(pawnHandle.GetEntryIndex());
+}
+
+static bool GetMirvPovRealAndTargetPawns(CEntityInstance *& realPawn, CEntityInstance *& targetPawn) {
+    CEntityInstance * realController = GetRealSplitScreenPlayer(0);
+    CEntityInstance * targetController = GetFakePovRadarController();
+    realPawn = GetPawnFromController(realController);
+    targetPawn = GetPawnFromController(targetController);
+    return nullptr != realPawn && nullptr != targetPawn && realPawn != targetPawn;
+}
+
+typedef void (__fastcall * MirvPov_FlashDataUpdate_t)(void* context, unsigned char* pawn, float* flashDuration);
+static MirvPov_FlashDataUpdate_t g_Org_MirvPov_FlashDataUpdate = nullptr;
+static bool g_MirvPovFlashDataUpdateHooked = false;
+static bool g_MirvPovFlashDataUpdateMirroring = false;
+
+static void MirvPov_CopyFlashState(unsigned char* realBase, unsigned char* targetBase) {
+    if(nullptr == realBase || nullptr == targetBase) return;
+    if(0 == g_clientDllOffsets.C_CSPlayerPawnBase.m_flFlashMaxAlpha
+        || 0 == g_clientDllOffsets.C_CSPlayerPawnBase.m_flFlashDuration) return;
+
+    ptrdiff_t flashStateStart = g_clientDllOffsets.C_CSPlayerPawnBase.m_flFlashMaxAlpha - 0x10;
+    ptrdiff_t flashStateEnd = g_clientDllOffsets.C_CSPlayerPawnBase.m_flFlashDuration + sizeof(float);
+    memcpy(realBase + flashStateStart, targetBase + flashStateStart, flashStateEnd - flashStateStart);
+}
+
+static void __fastcall New_MirvPov_FlashDataUpdate(void* context, unsigned char* pawn, float* flashDuration) {
+    if(nullptr == g_Org_MirvPov_FlashDataUpdate) return;
+
+    g_Org_MirvPov_FlashDataUpdate(context, pawn, flashDuration);
+
+    if(!g_MirvPovFlashDataUpdateMirroring && MirvPov_IsEnabled()) {
+        CEntityInstance * realPawn = nullptr;
+        CEntityInstance * targetPawn = nullptr;
+        if(GetMirvPovRealAndTargetPawns(realPawn, targetPawn)) {
+            auto realBase = (unsigned char *)realPawn;
+            auto targetBase = (unsigned char *)targetPawn;
+            if(pawn == targetBase) {
+                g_MirvPovFlashDataUpdateMirroring = true;
+                g_Org_MirvPov_FlashDataUpdate(context, realBase, flashDuration);
+                g_MirvPovFlashDataUpdateMirroring = false;
+                return;
+            }
+        }
+    }
+}
+
+static void MirvPov_ApplyFlashDataUpdateHook(HMODULE clientDll) {
+    if(g_MirvPovFlashDataUpdateHooked) return;
+    if(nullptr == clientDll) {
+        advancedfx::Message("[mirv_pov_flash] No client.dll handle for flash data update hook\n");
+        return;
+    }
+
+    size_t funcAddr = getAddress(clientDll, "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 40 0F 29 74 24 30 33 C9 0F 29 7C 24 20 49 8B F8 48 8B DA C6 82 F8 13 00 00 00 E8 ?? ?? ?? ?? 33 ED");
+    if(0 == funcAddr) {
+        advancedfx::Message("[mirv_pov_flash] Flash data update pattern not found\n");
+        return;
+    }
+
+    g_Org_MirvPov_FlashDataUpdate = (MirvPov_FlashDataUpdate_t)funcAddr;
+    DetourTransactionBegin();
+    DetourUpdateThread(GetCurrentThread());
+    DetourAttach(&(PVOID&)g_Org_MirvPov_FlashDataUpdate, New_MirvPov_FlashDataUpdate);
+    if(NO_ERROR == DetourTransactionCommit()) {
+        g_MirvPovFlashDataUpdateHooked = true;
+        advancedfx::Message("[mirv_pov_flash] Hooked flash data update at %p\n", (void*)funcAddr);
+    } else {
+        advancedfx::Message("[mirv_pov_flash] Flash data update detour failed\n");
+        g_Org_MirvPov_FlashDataUpdate = nullptr;
+    }
+}
+
+static void MirvPov_RemoveFlashDataUpdateHook() {
+    if(!g_MirvPovFlashDataUpdateHooked || nullptr == g_Org_MirvPov_FlashDataUpdate) return;
+
+    DetourTransactionBegin();
+    DetourUpdateThread(GetCurrentThread());
+    DetourDetach(&(PVOID&)g_Org_MirvPov_FlashDataUpdate, New_MirvPov_FlashDataUpdate);
+    DetourTransactionCommit();
+    g_MirvPovFlashDataUpdateHooked = false;
+    advancedfx::Message("[mirv_pov_flash] Unhooked flash data update\n");
+}
+
+static void MirvPov_CopyFlashState() {
+    if(!MirvPov_IsEnabled()) return;
+
+    CEntityInstance * realPawn = nullptr;
+    CEntityInstance * targetPawn = nullptr;
+    if(!GetMirvPovRealAndTargetPawns(realPawn, targetPawn)) return;
+
+    MirvPov_CopyFlashState((unsigned char *)realPawn, (unsigned char *)targetPawn);
+}
+
 static uint8_t * GetObserverModeFieldPtr(CEntityInstance * pawn) {
     if(void * pObserverServices = GetObserverServicesPtr(pawn)) {
         return (uint8_t *)((unsigned char *)pObserverServices + g_clientDllOffsets.CPlayer_ObserverServices.m_iObserverMode);
@@ -652,6 +752,7 @@ void MirvPov_RestorePersistentIdentity() {
 
 void MirvPov_UpdateSeekDetection() {
     if(!MirvPov_IsEnabled()) return;
+    MirvPov_CopyFlashState();
     MirvPov_UpdateVoiceHud();
     if(!g_pEngineToClient) return;
     SOURCESDK::CS2::IDemoFile * pDemoFile = g_pEngineToClient->GetDemoFile();
@@ -946,6 +1047,7 @@ void MirvPov_Enable(HMODULE clientDll) {
     if(g_MirvPovEnabled) return;
     g_MirvPovAutoSync = true;
     MirvPovHud_ApplyPatches(clientDll);
+    MirvPov_ApplyFlashDataUpdateHook(clientDll);
     MirvPov_ApplyRadarPatches(clientDll);
     MirvPov_HookVoiceHud(clientDll);
     MirvPov_ResetVoiceHud();
@@ -956,6 +1058,7 @@ void MirvPov_Enable(HMODULE clientDll) {
 void MirvPov_Disable() {
     if(!g_MirvPovEnabled) return;
     g_MirvPovAutoSync = false;
+    MirvPov_RemoveFlashDataUpdateHook();
     MirvPovHud_RemovePatches();
     MirvPov_RemoveRadarPatches();
     MirvPov_ClearSyntheticSpeaking();

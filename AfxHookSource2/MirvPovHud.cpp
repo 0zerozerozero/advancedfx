@@ -170,12 +170,89 @@ static uint8_t * g_pHudSpectatorCheckPatchAddr = nullptr;
 static uint8_t g_HudSpectatorCheckOrigByte = 0;
 static bool g_bHudSpectatorCheckPatched = false;
 
+static uint8_t * g_pFlashHudGatePatchAddr[2] = {};
+static uint8_t g_FlashHudGateOrigBytes[2][2] = {};
+static bool g_bFlashHudGatePatched[2] = {};
+
+static bool MirvPovHud_PatchTwoBytes(uint8_t* patchAddr, const uint8_t patchBytes[2], uint8_t originalBytes[2], const char* name) {
+    DWORD oldProtect;
+    if(!VirtualProtect(patchAddr, 2, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+        advancedfx::Message("[mirv_pov_flash] VirtualProtect failed for %s (error %lu)\n", name, GetLastError());
+        return false;
+    }
+
+    memcpy(originalBytes, patchAddr, 2);
+    memcpy(patchAddr, patchBytes, 2);
+    FlushInstructionCache(GetCurrentProcess(), patchAddr, 2);
+
+    DWORD dummy;
+    VirtualProtect(patchAddr, 2, oldProtect, &dummy);
+    return true;
+}
+
+static void MirvPovHud_RestoreTwoBytes(uint8_t* patchAddr, uint8_t originalBytes[2]) {
+    DWORD oldProtect;
+    if(VirtualProtect(patchAddr, 2, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+        memcpy(patchAddr, originalBytes, 2);
+        FlushInstructionCache(GetCurrentProcess(), patchAddr, 2);
+        DWORD dummy;
+        VirtualProtect(patchAddr, 2, oldProtect, &dummy);
+    }
+}
+
+static void MirvPovHud_ApplyFlashHudGatePatches(HMODULE clientDll) {
+    struct PatchSpec {
+        const char* pattern;
+        size_t offset;
+        uint8_t bytes[2];
+        const char* name;
+    } specs[] = {
+        { "48 8B F2 48 8B E9 E8 ?? ?? ?? ?? 84 C0 0F 85", 11, { 0x30, 0xC0 }, "flash up-HUD gate" },
+        { "44 0F 28 94 24 ?? ?? ?? ?? 48 8B BC 24 ?? ?? ?? ?? 48 8B B4 24 ?? ?? ?? ?? 84 C0", 25, { 0x30, 0xC0 }, "flash down-HUD gate" }
+    };
+
+    for(int i = 0; i < _countof(specs); ++i) {
+        if(g_bFlashHudGatePatched[i]) continue;
+
+        size_t matchAddr = getAddress(clientDll, specs[i].pattern);
+        if(0 == matchAddr) {
+            advancedfx::Message("[mirv_pov_flash] %s pattern not found\n", specs[i].name);
+            continue;
+        }
+
+        auto patchAddr = (uint8_t*)(matchAddr + specs[i].offset);
+        if(0x84 != patchAddr[0] || 0xC0 != patchAddr[1]) {
+            advancedfx::Message("[mirv_pov_flash] %s landed on unexpected bytes %02X %02X\n", specs[i].name, patchAddr[0], patchAddr[1]);
+            continue;
+        }
+
+        if(MirvPovHud_PatchTwoBytes(patchAddr, specs[i].bytes, g_FlashHudGateOrigBytes[i], specs[i].name)) {
+            g_pFlashHudGatePatchAddr[i] = patchAddr;
+            g_bFlashHudGatePatched[i] = true;
+            advancedfx::Message("[mirv_pov_flash] Patched %s at %p\n", specs[i].name, (void*)patchAddr);
+        }
+    }
+}
+
+static void MirvPovHud_RemoveFlashHudGatePatches() {
+    for(int i = 0; i < 2; ++i) {
+        if(g_bFlashHudGatePatched[i] && g_pFlashHudGatePatchAddr[i]) {
+            MirvPovHud_RestoreTwoBytes(g_pFlashHudGatePatchAddr[i], g_FlashHudGateOrigBytes[i]);
+            g_pFlashHudGatePatchAddr[i] = nullptr;
+            g_bFlashHudGatePatched[i] = false;
+            advancedfx::Message("[mirv_pov_flash] Restored flash HUD gate %d\n", i);
+        }
+    }
+}
+
 void MirvPovHud_ApplyPatches(HMODULE clientDll) {
-    if(g_bHudSpectatorCheckPatched && g_bGetObserverModeHooked && g_bGetObserverTargetHooked && g_bIsLocalPlayerHLTVHooked && g_bIsDemoOrHltvHooked) return;
+    if(g_bHudSpectatorCheckPatched && g_bGetObserverModeHooked && g_bGetObserverTargetHooked && g_bIsLocalPlayerHLTVHooked && g_bIsDemoOrHltvHooked && g_bFlashHudGatePatched[0] && g_bFlashHudGatePatched[1]) return;
     if(nullptr == clientDll) {
         advancedfx::Message("[mirv_pov_radar_patch] No client.dll handle\n");
         return;
     }
+
+    MirvPovHud_ApplyFlashHudGatePatches(clientDll);
 
     // --- Hook GetObserverMode (sub_180AD5580) - return OBS_MODE_NONE during frame context ---
     if(!g_bGetObserverModeHooked) {
@@ -347,6 +424,8 @@ void MirvPovHud_ApplyPatches(HMODULE clientDll) {
 }
 
 void MirvPovHud_RemovePatches() {
+    MirvPovHud_RemoveFlashHudGatePatches();
+
     if(g_bGetObserverModeHooked && g_Org_GetObserverMode) {
         DetourTransactionBegin();
         DetourUpdateThread(GetCurrentThread());
