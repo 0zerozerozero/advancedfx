@@ -644,7 +644,7 @@ CON_COMMAND(__mirv_panorama_print_children, "") {
 	}
 }
 
-typedef uint32_t* (__fastcall *g_Original_hashString_t)(uint32_t* pResult, const char* string);
+typedef unsigned int (__fastcall *g_Original_hashString_t)(const char* string, unsigned int length, unsigned int lengthXorSeed);
 g_Original_hashString_t g_Original_hashString = nullptr;
 
 
@@ -655,9 +655,9 @@ public:
 	: m_Event(event) { }
 
 	SOURCESDK::CS2::CKV3MemberName hashString(const char * string) {
-		uint32_t hash;
-		g_Original_hashString(&hash, string);
-		return SOURCESDK::CS2::CKV3MemberName(hash, -1, string);
+		size_t len = strlen(string);
+		unsigned int hash = g_Original_hashString(string, (unsigned int)len, (unsigned int)len ^ 0x31415926);
+		return SOURCESDK::CS2::CKV3MemberName((int)hash, -1, string);
 	}
 
 	bool IsHashStringEqual(const char * a, const SOURCESDK::CS2::CKV3MemberName & b) {
@@ -1223,15 +1223,15 @@ void __fastcall My_Panorama_CStylePropertyWashColor_Clone(void * This, void * pT
 }
 
 void getDeathMsgAddrs(HMODULE clientDll) {
-	// can be found with strings like "attacker" and "userid", etc. it basically takes all info from player_death event
-	if (auto addr = getAddress(clientDll, "48 89 54 24 10 48 89 4C 24 08 55 53 56 57 41 54 48 8D AC 24 10 E0 FF FF B8 F0 ?? ?? ?? E8 ?? ?? ?? ?? 48 2B")) {
+	// can be found with strings like "attacker" and "userid", etc. it basically takes all info from player_death event, called by rbanch in a function that references "player_death", "realtime_passthrough"
+	if (auto addr = getAddress(clientDll, "48 89 4c 24 08 55 53 41 54 41 55 41 56 48 8d ac 24 60 f7 ff ff")) {
 		g_Original_handlePlayerDeath = (g_Original_handlePlayerDeath_t)(addr);
 	} else ErrorBox(MkErrStr(__FILE__, __LINE__));
 
-	// called in multiple places with strings like "userid", "attacker", etc. as second argument
+	// called in multiple places with strings like "userid", "attacker", etc. as first argument, length as second argument and length XOR 0x31415926
 	// e.g. in function above too
-	if (auto addr = getAddress(clientDll, "48 8B 58 ?? 0F 29 B4 24 C0 20 00 00 E8 ?? ?? ?? ??")) {
-		g_Original_hashString = (g_Original_hashString_t)(addr + 12 + 5 + *(int32_t*)(addr + 12 + 1));
+	if (auto addr = getAddress(clientDll, "48 83 EC 28 45 8B D0 4C 8B C9 48 83 FA 04 0F 82 ?? ?? ?? ?? 0F B6 09 48 89 5C 24 20 8D 41 BF 3C 19 77 03 80 C1 20")) {
+		g_Original_hashString = (g_Original_hashString_t)(addr);
 	} else ErrorBox(MkErrStr(__FILE__, __LINE__));	
 
 	// snippet from function handlePlayerDeath above	
@@ -1317,12 +1317,12 @@ LAB_1809a7de1
 
 	// function has "file://{resources}/layout/hud/hud.xml" string and also references CCSGO_Hud vftable
 	// hudpanel is DAT that param_1 assigned to     
-	size_t g_HudPanel_addr = getAddress(clientDll, "48 89 AE ?? ?? ?? ?? 89 AE ?? ?? ?? ?? C6 86 ?? ?? ?? ?? 01 48 89 86 ?? ?? ?? ?? 48 89 35 ?? ?? ?? ?? e8 ?? ?? ?? ??");
+	size_t g_HudPanel_addr = getAddress(clientDll, "48 89 86 ?? ?? ?? ?? 48 89 35 ?? ?? ?? ??");
 	if (g_HudPanel_addr == 0) {
 		ErrorBox(MkErrStr(__FILE__, __LINE__));	
 		return false;
 	} else {
-		g_HudPanel_addr += 30;
+		g_HudPanel_addr += 10;
 	};
 
 	// function has CreatePanelWithCurrentContext string
