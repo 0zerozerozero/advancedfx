@@ -69,19 +69,10 @@ struct ClientDllOffsets_t {
 		ptrdiff_t m_pCameraServices = 0; // CPlayer_CameraServices*
 	} C_BasePlayerPawn;
 
-	struct C_CSPlayerPawnBase {
-		ptrdiff_t m_entitySpottedState = 0; // EntitySpottedState_t
-	} C_CSPlayerPawnBase;
-
-    struct C_CSPlayerPawn {
-        ptrdiff_t m_ArmorValue = 0; // int32
-        ptrdiff_t m_bPrevHelmet = 0; // bool
-    } C_CSPlayerPawn;
-
-	struct EntitySpottedState_t {
-		ptrdiff_t m_bSpotted = 0; // bool
-		ptrdiff_t m_bSpottedByMask = 0; // uint32[2]
-	} EntitySpottedState_t;
+	struct C_CSPlayerPawn {
+		ptrdiff_t m_ArmorValue = 0; // int32
+		ptrdiff_t m_bPrevHelmet = 0; // bool
+	} C_CSPlayerPawn;
 
 	struct CPlayer_CameraServices {
 		ptrdiff_t m_hViewEntity = 0; // CHandle< CBaseEntity >

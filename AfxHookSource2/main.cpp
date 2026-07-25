@@ -792,13 +792,6 @@ bool CS2_Client_CSetupView_Trampoline_IsPlayingDemo(void *ThisCViewSetup) {
 
 	g_MirvInputEx.m_MirvInput->Supply_MouseFrameEnd();
 
-	// This trampoline runs inside CViewRender::SetUpView. Refresh the forced
-	// teammate spotted state here as a later pass than FRAME_RENDER_PASS begin,
-	// so visibility/radar code that runs between the frame-stage hook and view
-	// setup has less chance to leave smoke-hidden teammates as unknown.
-	MirvPov_RepairTeamSpotted();
-	MirvPov_ReWriteSpotted();
-
 	g_CurrentGameCamera.origin[0] = Tx;
 	g_CurrentGameCamera.origin[1] = Ty;
 	g_CurrentGameCamera.origin[2] = Tz;
@@ -916,9 +909,8 @@ CON_COMMAND(__mirv_o,"") {
 typedef void (__fastcall * CViewRender_UnkMakeMatrix_t)(void* This);
 CViewRender_UnkMakeMatrix_t g_Old_CViewRender_UnkMakeMatrix = nullptr;
 void __fastcall New_CViewRender_UnkMakeMatrix(void* This) {
-	
+
 	g_Old_CViewRender_UnkMakeMatrix(This);
-	MirvPov_ReWriteSpotted();
 	//memcpy(g_WorldToScreenMatrix.m,(unsigned char*)This + 0x1b8,sizeof(g_WorldToScreenMatrix.m));
 
 
@@ -1456,7 +1448,7 @@ typedef void (* CS2_Client_FrameStageNotify_t)(void* This, SOURCESDK::CS2::Clien
 CS2_Client_FrameStageNotify_t old_CS2_Client_FrameStageNotify;
 
 void  new_CS2_Client_FrameStageNotify(void* This, SOURCESDK::CS2::ClientFrameStage_t curStage) {
-	
+
 	AfxHookSource2Rs_Engine_RunJobQueue();
 
 	/*
@@ -1518,7 +1510,6 @@ void  new_CS2_Client_FrameStageNotify(void* This, SOURCESDK::CS2::ClientFrameSta
 	AfxHookSource2Rs_Engine_OnClientFrameStageNotify(curStage, true);
 
 	if(curStage == SOURCESDK::CS2::FRAME_RENDER_PASS) {
-		MirvPov_BeginFrame();
 		MirvPov_UpdateSeekDetection();
 		MirvPov_UpdateScoreboardSync();
 	}
@@ -1527,10 +1518,6 @@ void  new_CS2_Client_FrameStageNotify(void* This, SOURCESDK::CS2::ClientFrameSta
 
 	if(curStage == SOURCESDK::CS2::FRAME_RENDER_PASS) {
 		MirvPovVoice_AfterRenderPass();
-	}
-
-	if(curStage == SOURCESDK::CS2::FRAME_RENDER_PASS) {
-		MirvPov_ReWriteSpotted();
 	}
 
 	AfxHookSource2Rs_Engine_OnClientFrameStageNotify(curStage, false);
