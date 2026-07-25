@@ -234,6 +234,10 @@ CON_COMMAND(mirv_pov_scoreboard, "Sync demo POV scoreboard key to +showscores. D
 	int argc = args->ArgC();
 	if(2 == argc) {
 		const char * arg1 = args->ArgV(1);
+		if(0 == _stricmp(arg1, "status")) {
+			MirvPov_PrintScoreboardStatus();
+			return;
+		}
 		if(0 == _stricmp(arg1, "true") || 0 == _stricmp(arg1, "1") || 0 == _stricmp(arg1, "on")) {
 			MirvPov_SetScoreboardSyncEnabled(true);
 			advancedfx::Message("mirv_pov_scoreboard enabled.\n");
@@ -246,7 +250,7 @@ CON_COMMAND(mirv_pov_scoreboard, "Sync demo POV scoreboard key to +showscores. D
 		}
 	}
 	advancedfx::Message(
-		"Usage: mirv_pov_scoreboard true|false\n"
+		"Usage: mirv_pov_scoreboard true|false|status\n"
 		"  true  - Enable scoreboard sync from current POV target's demo ButtonScore\n"
 		"  false - Disable scoreboard sync and close +showscores\n"
 		"Current: %s\n"

@@ -28,6 +28,7 @@ void MirvPov_UpdateSeekDetection();
 void MirvPov_UpdateScoreboardSync();
 bool MirvPov_IsScoreboardSyncEnabled();
 void MirvPov_SetScoreboardSyncEnabled(bool enabled);
+void MirvPov_PrintScoreboardStatus();
 void MirvPov_ReWriteSpotted();
 void MirvPov_RepairTeamSpotted();
 

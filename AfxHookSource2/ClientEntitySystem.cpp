@@ -57,6 +57,14 @@ static bool g_MirvPovScoreboardSyncEnabled = false;
 static bool g_MirvPovScoreboardWasOpen = false;
 static bool g_MirvPovHltvScoreboardOpen = false;
 static bool g_MirvPovUserCmdScoreboardOpen[256] = {};
+static uint64_t g_MirvPovScoreboardUserCmdMessages = 0;
+static uint64_t g_MirvPovScoreboardUserCmdEntries = 0;
+static uint64_t g_MirvPovScoreboardUserCmdParsed = 0;
+static uint64_t g_MirvPovScoreboardHltvMessages = 0;
+static int g_MirvPovScoreboardLastPlayerSlot = -1;
+static uint64_t g_MirvPovScoreboardLastStates[3] = {};
+static size_t g_MirvPovScoreboardHltvHookAddr = 0;
+static size_t g_MirvPovScoreboardUserCmdHookAddr = 0;
 
 static unsigned char * (__fastcall * g_Org_HltvFixupOperatorTick_Parse)(__int64 This, unsigned char * data, __int64 parseContext) = nullptr;
 static bool g_MirvPovHltvFixupOperatorTickHooked = false;
@@ -787,8 +795,7 @@ static bool MirvPov_SkipProtoField(const unsigned char * end, const unsigned cha
     return false;
 }
 
-static bool MirvPov_ParseBaseUserCmdButtons(const unsigned char * data, size_t size, uint64_t outStates[3], unsigned int depth = 0) {
-    if(4 < depth) return false;
+static bool MirvPov_FindProtoMessageField(const unsigned char * data, size_t size, uint64_t wantedField, const unsigned char *& nested, size_t & nestedSize) {
     const unsigned char * cursor = data;
     const unsigned char * end = data + size;
     while(cursor < end) {
@@ -799,15 +806,28 @@ static bool MirvPov_ParseBaseUserCmdButtons(const unsigned char * data, size_t s
         if(2 == wireType) {
             uint64_t length = 0;
             if(!MirvPov_ReadVarInt(data, end, cursor, length) || (uint64_t)(end - cursor) < length) return false;
-            const unsigned char * nested = cursor;
+            if(field == wantedField) {
+                nested = cursor;
+                nestedSize = (size_t)length;
+                return true;
+            }
             cursor += length;
-            if((3 == field || 2 == field) && MirvPov_ParseInButtonStatePB(nested, (size_t)length, outStates)) return true;
-            if(MirvPov_ParseBaseUserCmdButtons(nested, (size_t)length, outStates, depth + 1)) return true;
         } else if(!MirvPov_SkipProtoField(end, cursor, wireType)) {
             return false;
         }
     }
     return false;
+}
+
+static bool MirvPov_ParseBaseUserCmdButtons(const unsigned char * data, size_t size, uint64_t outStates[3]) {
+    const unsigned char * baseUserCmd = nullptr;
+    size_t baseUserCmdSize = 0;
+    if(!MirvPov_FindProtoMessageField(data, size, 1, baseUserCmd, baseUserCmdSize)) return false;
+
+    const unsigned char * buttons = nullptr;
+    size_t buttonsSize = 0;
+    if(!MirvPov_FindProtoMessageField(baseUserCmd, baseUserCmdSize, 3, buttons, buttonsSize)) return false;
+    return MirvPov_ParseInButtonStatePB(buttons, buttonsSize, outStates);
 }
 
 static bool MirvPov_ReadProtoBytes(void * value, const unsigned char *& data, size_t & size) {
@@ -820,14 +840,19 @@ static bool MirvPov_ReadProtoBytes(void * value, const unsigned char *& data, si
 }
 
 static void MirvPov_UpdateUserCmdScoreboard(int playerId, const uint64_t states[3]) {
-    g_MirvPovUserCmdScoreboardOpen[(unsigned int)playerId & 0xff] = 0 != (states[0] & 0x200000000ull);
+    if(playerId < 0 || 256 <= playerId) return;
+    g_MirvPovUserCmdScoreboardOpen[playerId] = 0 != (states[0] & 0x200000000ull);
+    g_MirvPovScoreboardLastPlayerSlot = playerId;
+    memcpy(g_MirvPovScoreboardLastStates, states, sizeof(g_MirvPovScoreboardLastStates));
 }
 
 static void MirvPov_ParseUserCommandsMessage(void * msg) {
+    ++g_MirvPovScoreboardUserCmdMessages;
     if(!msg) return;
     void * entriesBase = *(void **)((unsigned char *)msg + 0x50);
     int count = *(int *)((unsigned char *)msg + 0x48);
     if(!entriesBase || count <= 0 || count > 256) return;
+    g_MirvPovScoreboardUserCmdEntries += (uint64_t)count;
 
     void ** entries = (void **)((unsigned char *)entriesBase + 0x8);
     for(int i = 0; i < count; ++i) {
@@ -839,41 +864,30 @@ static void MirvPov_ParseUserCommandsMessage(void * msg) {
         if(!MirvPov_ReadProtoBytes(protoBytes, data, size)) continue;
         uint64_t states[3] = {0, 0, 0};
         if(MirvPov_ParseBaseUserCmdButtons(data, size, states)) {
-            int playerId = *(int *)((unsigned char *)entry + 0x2c);
+            int playerId = *(int *)((unsigned char *)entry + 0x34);
             MirvPov_UpdateUserCmdScoreboard(playerId, states);
+            ++g_MirvPovScoreboardUserCmdParsed;
         }
     }
 }
 
 static int MirvPov_GetCurrentTargetControllerIndex() {
-    CEntityInstance * realController = GetRealSplitScreenPlayer(0);
-    if(!realController || !realController->IsPlayerController()) return -1;
+    CEntityInstance * targetController = GetObservedPlayerController();
+    if(nullptr == targetController) return -1;
 
-    auto pawnHandle = realController->GetPlayerPawnHandle();
-    if(!pawnHandle.IsValid()) return -1;
-    CEntityInstance * observerPawn = GetEntityFromIndex(pawnHandle.GetEntryIndex());
-    if(!observerPawn) return -1;
+    auto controllerHandle = targetController->GetHandle();
+    return controllerHandle.IsValid() ? controllerHandle.GetEntryIndex() : -1;
+}
 
-    uint8_t * pObsMode = GetObserverModeFieldPtrUnchecked(observerPawn);
-    if(!pObsMode || 0 == *pObsMode) return -1;
-
-    unsigned int * pObsTarget = GetObserverTargetFieldPtrUnchecked(observerPawn);
-    if(!pObsTarget) return -1;
-    SOURCESDK::CS2::CBaseHandle targetHandle(*pObsTarget);
-    if(!targetHandle.IsValid()) return -1;
-
-    CEntityInstance * targetPawn = GetEntityFromIndex(targetHandle.GetEntryIndex());
-    if(!targetPawn || !targetPawn->IsPlayerPawn()) return -1;
-
-    auto controllerHandle = targetPawn->GetPlayerControllerHandle();
-    if(!controllerHandle.IsValid()) return -1;
-    return controllerHandle.GetEntryIndex();
+static int MirvPov_GetCurrentTargetPlayerSlot() {
+    int controllerIndex = MirvPov_GetCurrentTargetControllerIndex();
+    return 1 <= controllerIndex && controllerIndex <= 64 ? controllerIndex - 1 : -1;
 }
 
 static bool MirvPov_IsTargetUserCmdScoreboardOpen() {
-    int targetControllerIndex = MirvPov_GetCurrentTargetControllerIndex();
-    if(targetControllerIndex < 0) return false;
-    return g_MirvPovUserCmdScoreboardOpen[(unsigned int)targetControllerIndex & 0xff];
+    int targetPlayerSlot = MirvPov_GetCurrentTargetPlayerSlot();
+    if(targetPlayerSlot < 0) return false;
+    return g_MirvPovUserCmdScoreboardOpen[targetPlayerSlot];
 }
 
 static void MirvPov_SetScoreboardOpen(bool open) {
@@ -893,6 +907,7 @@ void MirvPov_UpdateScoreboardSync() {
 
 static unsigned char * __fastcall New_HltvFixupOperatorTick_Parse(__int64 This, unsigned char * data, __int64 parseContext) {
     unsigned char * result = g_Org_HltvFixupOperatorTick_Parse(This, data, parseContext);
+    ++g_MirvPovScoreboardHltvMessages;
     g_MirvPovHltvScoreboardOpen = 0 != *(unsigned char *)(This + 0x40);
     return result;
 }
@@ -901,9 +916,12 @@ static void MirvPov_HookHltvFixupOperatorTick(HMODULE clientDll) {
     if(g_MirvPovHltvFixupOperatorTickHooked) return;
     if(nullptr == clientDll) return;
 
-    size_t matchAddr = getAddress(clientDll, "89 56 38 48 85 DB 0F 85 ?? ?? ?? ?? E9 ?? ?? ?? ?? 40 80 FF 12");
-    if(0 == matchAddr) return;
-    size_t funcAddr = matchAddr - 0x120;
+    size_t funcAddr = getAddress(clientDll, "48 89 5C 24 18 48 89 6C 24 20 56 41 56 41 57 48 81 EC 80 00 00 00 49 8B E8 48 89 BC 24 A8 00 00 00 48 8B DA 4C 8D 3D ?? ?? ?? ?? 48 8B F1 45 33 F6 48 3B 5D 00 72 32 8B C3 2B 45 08 3B 45 1C 0F 84 A2 03 00 00 44 8B 4D 5C");
+    if(0 == funcAddr) {
+        advancedfx::Warning("[mirv_pov_scoreboard] HLTV parser pattern not found.\n");
+        return;
+    }
+    g_MirvPovScoreboardHltvHookAddr = funcAddr;
 
     g_Org_HltvFixupOperatorTick_Parse = (decltype(g_Org_HltvFixupOperatorTick_Parse))funcAddr;
     DetourTransactionBegin();
@@ -917,16 +935,20 @@ static void MirvPov_HookHltvFixupOperatorTick(HMODULE clientDll) {
 }
 
 static void __fastcall New_CSVCMsg_UserCommands_Handler(void * This, void * msg) {
-    MirvPov_ParseUserCommandsMessage(msg);
     g_Org_CSVCMsg_UserCommands_Handler(This, msg);
+    MirvPov_ParseUserCommandsMessage(msg);
 }
 
 static void MirvPov_HookUserCommands(HMODULE clientDll) {
     if(g_MirvPovUserCommandsHooked) return;
     if(nullptr == clientDll) return;
 
-    size_t funcAddr = getAddress(clientDll, "4C 8B DC 53 41 54 41 57 48 83 EC 50 4C 8B 42 50 33 C0 4D 85 C0 4C 8B E1 49 8D 58 08");
-    if(0 == funcAddr) return;
+    size_t funcAddr = getAddress(clientDll, "4C 8B DC 49 89 53 10 49 89 4B 08 55 53 57 49 8D AB 38 FF FF FF 48 81 EC B0 01 00 00 48 63 42 48");
+    if(0 == funcAddr) {
+        advancedfx::Warning("[mirv_pov_scoreboard] UserCommands handler pattern not found.\n");
+        return;
+    }
+    g_MirvPovScoreboardUserCmdHookAddr = funcAddr;
 
     g_Org_CSVCMsg_UserCommands_Handler = (decltype(g_Org_CSVCMsg_UserCommands_Handler))funcAddr;
     DetourTransactionBegin();
@@ -1337,12 +1359,48 @@ void MirvPov_SetScoreboardSyncEnabled(bool enabled) {
     if(!enabled) MirvPov_SetScoreboardOpen(false);
 }
 
+void MirvPov_PrintScoreboardStatus() {
+    int targetControllerIndex = MirvPov_GetCurrentTargetControllerIndex();
+    int targetPlayerSlot = MirvPov_GetCurrentTargetPlayerSlot();
+    bool targetOpen = 0 <= targetPlayerSlot && g_MirvPovUserCmdScoreboardOpen[targetPlayerSlot];
+    advancedfx::Message(
+        "mirv_pov_scoreboard enabled=%d pov=%d hudSuppressed=%d outputOpen=%d hltvOpen=%d targetOpen=%d\n"
+        "  hltvHook=%d addr=%p messages=%llu userCmdHook=%d addr=%p messages=%llu entries=%llu parsed=%llu\n"
+        "  targetController=%d targetSlot=%d lastPlayerSlot=%d lastStates=0x%llx/0x%llx/0x%llx\n",
+        g_MirvPovScoreboardSyncEnabled ? 1 : 0,
+        MirvPov_IsEnabled() ? 1 : 0,
+        MirvPovHud_ShouldSuppressFrame() ? 1 : 0,
+        g_MirvPovScoreboardWasOpen ? 1 : 0,
+        g_MirvPovHltvScoreboardOpen ? 1 : 0,
+        targetOpen ? 1 : 0,
+        g_MirvPovHltvFixupOperatorTickHooked ? 1 : 0,
+        (void *)g_MirvPovScoreboardHltvHookAddr,
+        (unsigned long long)g_MirvPovScoreboardHltvMessages,
+        g_MirvPovUserCommandsHooked ? 1 : 0,
+        (void *)g_MirvPovScoreboardUserCmdHookAddr,
+        (unsigned long long)g_MirvPovScoreboardUserCmdMessages,
+        (unsigned long long)g_MirvPovScoreboardUserCmdEntries,
+        (unsigned long long)g_MirvPovScoreboardUserCmdParsed,
+        targetControllerIndex,
+        targetPlayerSlot,
+        g_MirvPovScoreboardLastPlayerSlot,
+        (unsigned long long)g_MirvPovScoreboardLastStates[0],
+        (unsigned long long)g_MirvPovScoreboardLastStates[1],
+        (unsigned long long)g_MirvPovScoreboardLastStates[2]);
+}
+
 void MirvPov_Enable(HMODULE clientDll) {
     if(g_MirvPovEnabled) return;
     g_MirvPovAutoSync = true;
     g_MirvPovScoreboardSyncEnabled = false;
     g_MirvPovHltvScoreboardOpen = false;
     memset(g_MirvPovUserCmdScoreboardOpen, 0, sizeof(g_MirvPovUserCmdScoreboardOpen));
+    g_MirvPovScoreboardUserCmdMessages = 0;
+    g_MirvPovScoreboardUserCmdEntries = 0;
+    g_MirvPovScoreboardUserCmdParsed = 0;
+    g_MirvPovScoreboardHltvMessages = 0;
+    g_MirvPovScoreboardLastPlayerSlot = -1;
+    memset(g_MirvPovScoreboardLastStates, 0, sizeof(g_MirvPovScoreboardLastStates));
     MirvPovHud_ApplyPatches(clientDll);
     MirvPov_ApplyFlashDataUpdateHook(clientDll);
     MirvPov_ApplyRadarPatches(clientDll);
