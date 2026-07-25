@@ -659,6 +659,56 @@ static unsigned int * GetObserverTargetFieldPtrUnchecked(CEntityInstance * pawn)
     return nullptr;
 }
 
+CEntityInstance * GetObservedPlayerPawn() {
+    if(0 == g_clientDllOffsets.C_BasePlayerPawn.m_pObserverServices
+        || 0 == g_clientDllOffsets.CPlayer_ObserverServices.m_iObserverMode
+        || 0 == g_clientDllOffsets.CPlayer_ObserverServices.m_hObserverTarget) return nullptr;
+
+    CEntityInstance * realPawn = GetPawnFromController(GetRealSplitScreenPlayer(0));
+    if(nullptr == realPawn) return nullptr;
+
+    uint8_t * observerMode = GetObserverModeFieldPtrUnchecked(realPawn);
+    if(nullptr == observerMode || 0 == *observerMode) return nullptr;
+
+    unsigned int * observerTarget = GetObserverTargetFieldPtrUnchecked(realPawn);
+    if(nullptr == observerTarget) return nullptr;
+
+    SOURCESDK::CS2::CBaseHandle targetHandle(*observerTarget);
+    if(!targetHandle.IsValid()) return nullptr;
+
+    CEntityInstance * targetPawn = GetEntityFromIndex(targetHandle.GetEntryIndex());
+    return nullptr != targetPawn && targetPawn->IsPlayerPawn() ? targetPawn : nullptr;
+}
+
+CEntityInstance * GetObservedPlayerController() {
+    CEntityInstance * targetPawn = GetObservedPlayerPawn();
+    if(nullptr == targetPawn) return nullptr;
+
+    auto controllerHandle = targetPawn->GetPlayerControllerHandle();
+    if(!controllerHandle.IsValid()) return nullptr;
+
+    CEntityInstance * targetController = GetEntityFromIndex(controllerHandle.GetEntryIndex());
+    return nullptr != targetController && targetController->IsPlayerController() ? targetController : nullptr;
+}
+
+static CEntityInstance * ResolveCurrentPovPlayerController() {
+    if(g_MirvPovAutoSync) return GetObservedPlayerController();
+    if(g_FakePovRadarControllerIndex <= 0) return nullptr;
+
+    CEntityInstance * controller = GetEntityFromIndex(g_FakePovRadarControllerIndex);
+    return nullptr != controller && controller->IsPlayerController() ? controller : nullptr;
+}
+
+CEntityInstance * GetCurrentPovPlayerController() {
+    return MirvPov_IsEnabled() ? ResolveCurrentPovPlayerController() : nullptr;
+}
+
+CEntityInstance * GetCurrentPovPlayerPawn() {
+    if(!MirvPov_IsEnabled()) return nullptr;
+    if(g_MirvPovAutoSync) return GetObservedPlayerPawn();
+    return GetPawnFromController(ResolveCurrentPovPlayerController());
+}
+
 static unsigned int * GetViewEntityFieldPtr(CEntityInstance * pawn) {
     if(void * pCameraServices = GetCameraServicesPtr(pawn)) {
         return (unsigned int *)((unsigned char *)pCameraServices + g_clientDllOffsets.CPlayer_CameraServices.m_hViewEntity);
