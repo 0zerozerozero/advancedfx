@@ -71,9 +71,6 @@ struct ClientDllOffsets_t {
 
 	struct C_CSPlayerPawnBase {
 		ptrdiff_t m_entitySpottedState = 0; // EntitySpottedState_t
-		ptrdiff_t m_flFlashMaxAlpha = 0; // float32
-		ptrdiff_t m_flFlashDuration = 0; // float32
-		ptrdiff_t m_bFlashDspHasBeenCleared = 0; // bool
 	} C_CSPlayerPawnBase;
 
     struct C_CSPlayerPawn {

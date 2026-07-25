@@ -111,35 +111,6 @@ bool MirvPovHud_ShouldSuppressFrame() {
     return g_IsLocalPlayerHLTV_SuppressFrames > 0;
 }
 
-// ============================================================================
-// Approach C: Hook GetLocalPlayerController + byte-patch spectator mode
-// ============================================================================
-
-// Hook sub_180AD5580 (GetObserverMode) - returns observer mode for slot 0.
-// This function calls sub_1808E0E70(0) directly, bypassing our
-// GetLocalPlayerController hook. The radar uses it to decide whether to
-// show spectator-mode behavior. By returning 0 (OBS_MODE_NONE) when our
-// POV radar is active, the radar treats us as the observed player directly.
-typedef int (__fastcall * GetObserverMode_t)();
-static GetObserverMode_t g_Org_GetObserverMode = nullptr;
-static bool g_bGetObserverModeHooked = false;
-
-static int __fastcall New_GetObserverMode() {
-    return g_Org_GetObserverMode();
-}
-
-// Hook sub_180AD55C0 (GetObserverTarget) - returns observer target handle for slot 0.
-// Like GetObserverMode, this calls sub_1808E0E70(0) directly, bypassing our
-// GetLocalPlayerController hook. By returning INVALID_EHANDLE during frame context,
-// the radar won't try to use a spectator target position.
-typedef unsigned int (__fastcall * GetObserverTarget_fn_t)(void* thisPtr);
-static GetObserverTarget_fn_t g_Org_GetObserverTarget_fn = nullptr;
-static bool g_bGetObserverTargetHooked = false;
-
-static unsigned int __fastcall New_GetObserverTarget_fn(void* thisPtr) {
-    return g_Org_GetObserverTarget_fn(thisPtr);
-}
-
 // Hook GameStateAPI::IsLocalPlayerHLTV (sub_180EFF830) - Panorama bridge callback.
 // The radar JS calls this to decide spectator vs player color mode.
 // Return original behavior on the stable baseline.
@@ -170,9 +141,13 @@ static uint8_t * g_pHudSpectatorCheckPatchAddr = nullptr;
 static uint8_t g_HudSpectatorCheckOrigByte = 0;
 static bool g_bHudSpectatorCheckPatched = false;
 
-static uint8_t * g_pFlashHudGatePatchAddr[2] = {};
-static uint8_t g_FlashHudGateOrigBytes[2][2] = {};
-static bool g_bFlashHudGatePatched[2] = {};
+static uint8_t * g_pFlashUpHudGatePatchAddr = nullptr;
+static uint8_t g_FlashUpHudGateOrigBytes[2] = {};
+static bool g_bFlashUpHudGatePatched = false;
+
+static uint8_t * g_pFlashDownHudGatePatchAddr = nullptr;
+static uint8_t g_FlashDownHudGateOrigBytes[5] = {};
+static bool g_bFlashDownHudGatePatched = false;
 
 static bool MirvPovHud_PatchTwoBytes(uint8_t* patchAddr, const uint8_t patchBytes[2], uint8_t originalBytes[2], const char* name) {
     DWORD oldProtect;
@@ -183,114 +158,147 @@ static bool MirvPovHud_PatchTwoBytes(uint8_t* patchAddr, const uint8_t patchByte
 
     memcpy(originalBytes, patchAddr, 2);
     memcpy(patchAddr, patchBytes, 2);
-    FlushInstructionCache(GetCurrentProcess(), patchAddr, 2);
+    bool patched = 0 == memcmp(patchAddr, patchBytes, 2)
+        && 0 != FlushInstructionCache(GetCurrentProcess(), patchAddr, 2);
+    if(!patched) {
+        memcpy(patchAddr, originalBytes, 2);
+        FlushInstructionCache(GetCurrentProcess(), patchAddr, 2);
+    }
 
     DWORD dummy;
-    VirtualProtect(patchAddr, 2, oldProtect, &dummy);
+    if(!VirtualProtect(patchAddr, 2, oldProtect, &dummy)) {
+        advancedfx::Warning("[mirv_pov_flash] Failed to restore page protection for %s (error %lu)\n", name, GetLastError());
+    }
+    return patched;
+}
+
+static bool MirvPovHud_RestoreTwoBytes(uint8_t* patchAddr, uint8_t originalBytes[2], const char* name) {
+    DWORD oldProtect;
+    if(!VirtualProtect(patchAddr, 2, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+        advancedfx::Warning("[mirv_pov_flash] Failed to restore %s page protection (error %lu)\n", name, GetLastError());
+        return false;
+    }
+
+    memcpy(patchAddr, originalBytes, 2);
+    bool restored = 0 == memcmp(patchAddr, originalBytes, 2)
+        && 0 != FlushInstructionCache(GetCurrentProcess(), patchAddr, 2);
+    DWORD dummy;
+    if(!VirtualProtect(patchAddr, 2, oldProtect, &dummy)) {
+        advancedfx::Warning("[mirv_pov_flash] Failed to restore page protection for %s (error %lu)\n", name, GetLastError());
+    }
+    return restored;
+}
+
+static bool MirvPovHud_ApplyFlashDownHudGatePatch(HMODULE clientDll) {
+    if(g_bFlashDownHudGatePatched) return true;
+
+    const size_t matchAddr = getAddress(clientDll, "84 C0 74 4C 8B 85 B0 02 00 00 49 8D 8D 48 03 00 00");
+    if(0 == matchAddr) {
+        advancedfx::Message("[mirv_pov_flash] flash down-HUD gate pattern not found\n");
+        return false;
+    }
+
+    uint8_t * testAddr = (uint8_t *)matchAddr;
+    uint8_t * patchAddr = testAddr - 5;
+    if(0xE8 != patchAddr[0]) {
+        advancedfx::Message("[mirv_pov_flash] flash down-HUD gate call-site has unexpected opcode %02X\n", patchAddr[0]);
+        return false;
+    }
+
+    DWORD oldProtect;
+    if(!VirtualProtect(patchAddr, 5, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+        advancedfx::Message("[mirv_pov_flash] VirtualProtect failed for flash down-HUD gate (error %lu)\n", GetLastError());
+        return false;
+    }
+
+    memcpy(g_FlashDownHudGateOrigBytes, patchAddr, sizeof(g_FlashDownHudGateOrigBytes));
+    const uint8_t patchBytes[5] = { 0xB8, 0, 0, 0, 0 }; // mov eax, 0
+    memcpy(patchAddr, patchBytes, sizeof(patchBytes));
+    bool patched = 0 == memcmp(patchAddr, patchBytes, sizeof(patchBytes))
+        && 0 != FlushInstructionCache(GetCurrentProcess(), patchAddr, sizeof(patchBytes));
+    if(!patched) {
+        memcpy(patchAddr, g_FlashDownHudGateOrigBytes, sizeof(g_FlashDownHudGateOrigBytes));
+        FlushInstructionCache(GetCurrentProcess(), patchAddr, sizeof(g_FlashDownHudGateOrigBytes));
+    }
+    DWORD dummy;
+    if(!VirtualProtect(patchAddr, 5, oldProtect, &dummy)) {
+        advancedfx::Warning("[mirv_pov_flash] Failed to restore flash down-HUD page protection (error %lu)\n", GetLastError());
+    }
+    if(!patched) {
+        advancedfx::Warning("[mirv_pov_flash] Failed to apply flash down-HUD gate patch\n");
+        return false;
+    }
+
+    g_pFlashDownHudGatePatchAddr = patchAddr;
+    g_bFlashDownHudGatePatched = true;
+    advancedfx::Message("[mirv_pov_flash] Patched flash down-HUD gate at %p\n", (void *)patchAddr);
     return true;
 }
 
-static void MirvPovHud_RestoreTwoBytes(uint8_t* patchAddr, uint8_t originalBytes[2]) {
-    DWORD oldProtect;
-    if(VirtualProtect(patchAddr, 2, PAGE_EXECUTE_READWRITE, &oldProtect)) {
-        memcpy(patchAddr, originalBytes, 2);
-        FlushInstructionCache(GetCurrentProcess(), patchAddr, 2);
-        DWORD dummy;
-        VirtualProtect(patchAddr, 2, oldProtect, &dummy);
-    }
-}
-
 static void MirvPovHud_ApplyFlashHudGatePatches(HMODULE clientDll) {
-    struct PatchSpec {
-        const char* pattern;
-        size_t offset;
-        uint8_t bytes[2];
-        const char* name;
-    } specs[] = {
-        { "48 8B F2 48 8B E9 E8 ?? ?? ?? ?? 84 C0 0F 85", 11, { 0x30, 0xC0 }, "flash up-HUD gate" },
-        { "44 0F 28 94 24 ?? ?? ?? ?? 48 8B BC 24 ?? ?? ?? ?? 48 8B B4 24 ?? ?? ?? ?? 84 C0", 25, { 0x30, 0xC0 }, "flash down-HUD gate" }
-    };
-
-    for(int i = 0; i < _countof(specs); ++i) {
-        if(g_bFlashHudGatePatched[i]) continue;
-
-        size_t matchAddr = getAddress(clientDll, specs[i].pattern);
+    if(!g_bFlashUpHudGatePatched) {
+        const size_t matchAddr = getAddress(clientDll, "48 8B F2 48 8B E9 E8 ?? ?? ?? ?? 84 C0 0F 85");
         if(0 == matchAddr) {
-            advancedfx::Message("[mirv_pov_flash] %s pattern not found\n", specs[i].name);
-            continue;
-        }
-
-        auto patchAddr = (uint8_t*)(matchAddr + specs[i].offset);
-        if(0x84 != patchAddr[0] || 0xC0 != patchAddr[1]) {
-            advancedfx::Message("[mirv_pov_flash] %s landed on unexpected bytes %02X %02X\n", specs[i].name, patchAddr[0], patchAddr[1]);
-            continue;
-        }
-
-        if(MirvPovHud_PatchTwoBytes(patchAddr, specs[i].bytes, g_FlashHudGateOrigBytes[i], specs[i].name)) {
-            g_pFlashHudGatePatchAddr[i] = patchAddr;
-            g_bFlashHudGatePatched[i] = true;
-            advancedfx::Message("[mirv_pov_flash] Patched %s at %p\n", specs[i].name, (void*)patchAddr);
+            advancedfx::Message("[mirv_pov_flash] flash up-HUD gate pattern not found\n");
+        } else {
+            uint8_t * patchAddr = (uint8_t *)(matchAddr + 11);
+            const uint8_t patchBytes[2] = { 0x30, 0xC0 };
+            if(0x84 != patchAddr[0] || 0xC0 != patchAddr[1]) {
+                advancedfx::Message("[mirv_pov_flash] flash up-HUD gate landed on unexpected bytes %02X %02X\n", patchAddr[0], patchAddr[1]);
+            } else if(MirvPovHud_PatchTwoBytes(patchAddr, patchBytes, g_FlashUpHudGateOrigBytes, "flash up-HUD gate")) {
+                g_pFlashUpHudGatePatchAddr = patchAddr;
+                g_bFlashUpHudGatePatched = true;
+                advancedfx::Message("[mirv_pov_flash] Patched flash up-HUD gate at %p\n", (void *)patchAddr);
+            }
         }
     }
+
+    MirvPovHud_ApplyFlashDownHudGatePatch(clientDll);
 }
 
 static void MirvPovHud_RemoveFlashHudGatePatches() {
-    for(int i = 0; i < 2; ++i) {
-        if(g_bFlashHudGatePatched[i] && g_pFlashHudGatePatchAddr[i]) {
-            MirvPovHud_RestoreTwoBytes(g_pFlashHudGatePatchAddr[i], g_FlashHudGateOrigBytes[i]);
-            g_pFlashHudGatePatchAddr[i] = nullptr;
-            g_bFlashHudGatePatched[i] = false;
-            advancedfx::Message("[mirv_pov_flash] Restored flash HUD gate %d\n", i);
+    if(g_bFlashUpHudGatePatched && g_pFlashUpHudGatePatchAddr) {
+        if(MirvPovHud_RestoreTwoBytes(g_pFlashUpHudGatePatchAddr, g_FlashUpHudGateOrigBytes, "flash up-HUD gate")) {
+            g_pFlashUpHudGatePatchAddr = nullptr;
+            g_bFlashUpHudGatePatched = false;
+            advancedfx::Message("[mirv_pov_flash] Restored flash up-HUD gate\n");
+        } else {
+            advancedfx::Warning("[mirv_pov_flash] Failed to restore flash up-HUD gate\n");
+        }
+    }
+
+    if(g_bFlashDownHudGatePatched && g_pFlashDownHudGatePatchAddr) {
+        DWORD oldProtect;
+        if(VirtualProtect(g_pFlashDownHudGatePatchAddr, 5, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+            memcpy(g_pFlashDownHudGatePatchAddr, g_FlashDownHudGateOrigBytes, sizeof(g_FlashDownHudGateOrigBytes));
+            bool restored = 0 == memcmp(g_pFlashDownHudGatePatchAddr, g_FlashDownHudGateOrigBytes, sizeof(g_FlashDownHudGateOrigBytes))
+                && 0 != FlushInstructionCache(GetCurrentProcess(), g_pFlashDownHudGatePatchAddr, 5);
+            DWORD dummy;
+            if(!VirtualProtect(g_pFlashDownHudGatePatchAddr, 5, oldProtect, &dummy)) {
+                advancedfx::Warning("[mirv_pov_flash] Failed to restore flash down-HUD page protection (error %lu)\n", GetLastError());
+            }
+            if(restored) {
+                g_pFlashDownHudGatePatchAddr = nullptr;
+                g_bFlashDownHudGatePatched = false;
+                advancedfx::Message("[mirv_pov_flash] Restored flash down-HUD gate\n");
+            } else {
+                advancedfx::Warning("[mirv_pov_flash] Failed to restore flash down-HUD gate\n");
+            }
+        } else {
+            advancedfx::Warning("[mirv_pov_flash] Failed to restore flash down-HUD page protection (error %lu)\n", GetLastError());
         }
     }
 }
 
 void MirvPovHud_ApplyPatches(HMODULE clientDll) {
-    if(g_bHudSpectatorCheckPatched && g_bGetObserverModeHooked && g_bGetObserverTargetHooked && g_bIsLocalPlayerHLTVHooked && g_bIsDemoOrHltvHooked && g_bFlashHudGatePatched[0] && g_bFlashHudGatePatched[1]) return;
+    if(g_bHudSpectatorCheckPatched && g_bIsLocalPlayerHLTVHooked && g_bIsDemoOrHltvHooked
+        && g_bFlashUpHudGatePatched && g_bFlashDownHudGatePatched) return;
     if(nullptr == clientDll) {
         advancedfx::Message("[mirv_pov_radar_patch] No client.dll handle\n");
         return;
     }
 
     MirvPovHud_ApplyFlashHudGatePatches(clientDll);
-
-    // --- Hook GetObserverMode (sub_180AD5580) - return OBS_MODE_NONE during frame context ---
-    if(!g_bGetObserverModeHooked) {
-        size_t funcAddr = getAddress(clientDll, "48 83 EC 28 33 C9 E8 ?? ?? ?? ?? 48 85 C0 74 ?? 48 8B 88 F8 11 00 00");
-        if(0 == funcAddr) {
-            advancedfx::Message("[mirv_pov_radar_patch] GetObserverMode pattern not found\n");
-        } else {
-            g_Org_GetObserverMode = (GetObserverMode_t)funcAddr;
-            DetourTransactionBegin();
-            DetourUpdateThread(GetCurrentThread());
-            DetourAttach(&(PVOID&)g_Org_GetObserverMode, New_GetObserverMode);
-            if(NO_ERROR == DetourTransactionCommit()) {
-                g_bGetObserverModeHooked = true;
-            } else {
-                advancedfx::Message("[mirv_pov_radar_patch] GetObserverMode detour failed\n");
-                g_Org_GetObserverMode = nullptr;
-            }
-        }
-    }
-
-    // --- Hook GetObserverTarget (sub_180AD55C0) - return INVALID_EHANDLE during frame context ---
-    if(!g_bGetObserverTargetHooked) {
-        size_t funcAddr = getAddress(clientDll, "40 53 48 83 EC 20 48 8B D9 33 C9 E8 ?? ?? ?? ?? 48 85 C0 74");
-        if(0 == funcAddr) {
-            advancedfx::Message("[mirv_pov_radar_patch] GetObserverTarget pattern not found\n");
-        } else {
-            g_Org_GetObserverTarget_fn = (GetObserverTarget_fn_t)funcAddr;
-            DetourTransactionBegin();
-            DetourUpdateThread(GetCurrentThread());
-            DetourAttach(&(PVOID&)g_Org_GetObserverTarget_fn, New_GetObserverTarget_fn);
-            if(NO_ERROR == DetourTransactionCommit()) {
-                g_bGetObserverTargetHooked = true;
-            } else {
-                advancedfx::Message("[mirv_pov_radar_patch] GetObserverTarget detour failed\n");
-                g_Org_GetObserverTarget_fn = nullptr;
-            }
-        }
-    }
 
     // --- Hook IsLocalPlayerHLTV (Panorama GameStateAPI callback) ---
     // DISABLED: interferes with xray / head markers in demo POV. Kept code for reference.
@@ -425,22 +433,6 @@ void MirvPovHud_ApplyPatches(HMODULE clientDll) {
 
 void MirvPovHud_RemovePatches() {
     MirvPovHud_RemoveFlashHudGatePatches();
-
-    if(g_bGetObserverModeHooked && g_Org_GetObserverMode) {
-        DetourTransactionBegin();
-        DetourUpdateThread(GetCurrentThread());
-        DetourDetach(&(PVOID&)g_Org_GetObserverMode, New_GetObserverMode);
-        DetourTransactionCommit();
-        g_bGetObserverModeHooked = false;
-    }
-
-    if(g_bGetObserverTargetHooked && g_Org_GetObserverTarget_fn) {
-        DetourTransactionBegin();
-        DetourUpdateThread(GetCurrentThread());
-        DetourDetach(&(PVOID&)g_Org_GetObserverTarget_fn, New_GetObserverTarget_fn);
-        DetourTransactionCommit();
-        g_bGetObserverTargetHooked = false;
-    }
 
     if(g_bIsLocalPlayerHLTVHooked && g_Org_IsLocalPlayerHLTV) {
         DetourTransactionBegin();

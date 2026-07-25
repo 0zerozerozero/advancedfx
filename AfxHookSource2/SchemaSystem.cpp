@@ -123,9 +123,6 @@ void initSchemaSystemOffsets()
 		advancedfx::Warning("SchemaSystem optional offset lookup failed: C_CSPlayerPawn.m_bPrevHelmet\n");
 	}
 	GET_OFFSET_CHECK(g_clientDllOffsets.C_CSPlayerPawnBase.m_entitySpottedState, "client.dll", "C_CSPlayerPawn", "m_entitySpottedState");
-	GET_OFFSET_CHECK(g_clientDllOffsets.C_CSPlayerPawnBase.m_flFlashMaxAlpha, "client.dll", "C_CSPlayerPawnBase", "m_flFlashMaxAlpha");
-	GET_OFFSET_CHECK(g_clientDllOffsets.C_CSPlayerPawnBase.m_flFlashDuration, "client.dll", "C_CSPlayerPawnBase", "m_flFlashDuration");
-	GET_OFFSET_CHECK(g_clientDllOffsets.C_CSPlayerPawnBase.m_bFlashDspHasBeenCleared, "client.dll", "C_CSPlayerPawnBase", "m_bFlashDspHasBeenCleared");
 	GET_OFFSET_CHECK(g_clientDllOffsets.EntitySpottedState_t.m_bSpotted, "client.dll", "EntitySpottedState_t", "m_bSpotted");
 	GET_OFFSET_CHECK(g_clientDllOffsets.EntitySpottedState_t.m_bSpottedByMask, "client.dll", "EntitySpottedState_t", "m_bSpottedByMask");
 	GET_OFFSET_CHECK(g_clientDllOffsets.C_BaseCSGrenadeProjectile.m_bCanCreateGrenadeTrail, "client.dll", "C_BaseCSGrenadeProjectile", "m_bCanCreateGrenadeTrail");
