@@ -226,6 +226,9 @@ target_sources(${PROJECT_NAME} PRIVATE
     MirvPovRadar.cpp
     MirvPovRadar.h
 
+    MirvPovFeedback.cpp
+    MirvPovFeedback.h
+
     MirvPovVoice.cpp
     MirvPovVoice.h
 

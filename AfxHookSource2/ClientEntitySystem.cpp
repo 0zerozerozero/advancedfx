@@ -4,6 +4,7 @@
 #include "DeathMsg.h"
 #include "WrpConsole.h"
 #include "Globals.h"
+#include "MirvPovFeedback.h"
 #include "MirvPovHud.h"
 #include "MirvPovRadar.h"
 #include "MirvPovVoice.h"
@@ -1349,6 +1350,7 @@ void MirvPov_Enable(HMODULE clientDll) {
     MirvPov_HookUserCommands(clientDll);
     MirvPov_ResetVoiceHud();
     g_MirvPovEnabled = true;
+    MirvPovFeedback_Initialize(clientDll);
     MirvPov_UpdateVoiceTeam();
 }
 

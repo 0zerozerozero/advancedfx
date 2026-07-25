@@ -1,5 +1,6 @@
 #include "SchemaSystem.h"
 #include "Globals.h"
+#include "../shared/AfxConsole.h"
 #include <winsock.h>
 
 ClientDllOffsets_t g_clientDllOffsets;
@@ -115,6 +116,12 @@ void initSchemaSystemOffsets()
 	GET_OFFSET_CHECK(g_clientDllOffsets.CPlayer_CameraServices.m_hViewEntity, "client.dll", "CPlayer_CameraServices", "m_hViewEntity");
 	GET_OFFSET_CHECK(g_clientDllOffsets.CPlayer_ObserverServices.m_iObserverMode, "client.dll", "CPlayer_ObserverServices", "m_iObserverMode");
 	GET_OFFSET_CHECK(g_clientDllOffsets.CPlayer_ObserverServices.m_hObserverTarget, "client.dll", "CPlayer_ObserverServices", "m_hObserverTarget");
+	if (!getOffset(&g_clientDllOffsets.C_CSPlayerPawn.m_ArmorValue, "client.dll", "C_CSPlayerPawn", "m_ArmorValue")) {
+		advancedfx::Warning("SchemaSystem optional offset lookup failed: C_CSPlayerPawn.m_ArmorValue\n");
+	}
+	if (!getOffset(&g_clientDllOffsets.C_CSPlayerPawn.m_bPrevHelmet, "client.dll", "C_CSPlayerPawn", "m_bPrevHelmet")) {
+		advancedfx::Warning("SchemaSystem optional offset lookup failed: C_CSPlayerPawn.m_bPrevHelmet\n");
+	}
 	GET_OFFSET_CHECK(g_clientDllOffsets.C_CSPlayerPawnBase.m_entitySpottedState, "client.dll", "C_CSPlayerPawn", "m_entitySpottedState");
 	GET_OFFSET_CHECK(g_clientDllOffsets.C_CSPlayerPawnBase.m_flFlashMaxAlpha, "client.dll", "C_CSPlayerPawnBase", "m_flFlashMaxAlpha");
 	GET_OFFSET_CHECK(g_clientDllOffsets.C_CSPlayerPawnBase.m_flFlashDuration, "client.dll", "C_CSPlayerPawnBase", "m_flFlashDuration");

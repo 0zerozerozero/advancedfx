@@ -76,6 +76,11 @@ struct ClientDllOffsets_t {
 		ptrdiff_t m_bFlashDspHasBeenCleared = 0; // bool
 	} C_CSPlayerPawnBase;
 
+    struct C_CSPlayerPawn {
+        ptrdiff_t m_ArmorValue = 0; // int32
+        ptrdiff_t m_bPrevHelmet = 0; // bool
+    } C_CSPlayerPawn;
+
 	struct EntitySpottedState_t {
 		ptrdiff_t m_bSpotted = 0; // bool
 		ptrdiff_t m_bSpottedByMask = 0; // uint32[2]
