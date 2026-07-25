@@ -264,9 +264,6 @@ target_sources(${PROJECT_NAME} PRIVATE
 	MirvFix.cpp
 	MirvFix.h
 
-	MirvVoiceHudFix.cpp
-	MirvVoiceHudFix.h
-
 	MirvTime.cpp
 	MirvTime.h
 

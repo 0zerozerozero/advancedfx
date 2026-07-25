@@ -21,7 +21,7 @@
 #include "MirvColors.h"
 #include "MirvFix.h"
 #include "MirvTime.h"
-#include "MirvVoiceHudFix.h"
+#include "MirvPovVoice.h"
 
 #include "../deps/release/prop/AfxHookSource/SourceSdkShared.h"
 #include "../deps/release/prop/AfxHookSource/SourceInterfaces.h"
@@ -1524,6 +1524,10 @@ void  new_CS2_Client_FrameStageNotify(void* This, SOURCESDK::CS2::ClientFrameSta
 	}
 
 	old_CS2_Client_FrameStageNotify(This, curStage);
+
+	if(curStage == SOURCESDK::CS2::FRAME_RENDER_PASS) {
+		MirvPovVoice_AfterRenderPass();
+	}
 
 	if(curStage == SOURCESDK::CS2::FRAME_RENDER_PASS) {
 		MirvPov_ReWriteSpotted();

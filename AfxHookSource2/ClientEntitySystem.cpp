@@ -972,7 +972,6 @@ void MirvPov_RestorePersistentIdentity() {
 
 void MirvPov_UpdateSeekDetection() {
     if(!MirvPov_IsEnabled()) return;
-    MirvPov_UpdateVoiceHud();
     if(!g_pEngineToClient) return;
     SOURCESDK::CS2::IDemoFile * pDemoFile = g_pEngineToClient->GetDemoFile();
     if(!pDemoFile) return;
@@ -1332,7 +1331,6 @@ void MirvPov_Disable() {
     MirvPovHud_RemovePatches();
     MirvPov_RemoveRadarPatches();
     MirvPovTeamID_RemovePatches();
-    MirvPov_ClearSyntheticSpeaking();
     MirvPov_ResetVoiceHud();
     g_MirvPovEnabled = false;
 }

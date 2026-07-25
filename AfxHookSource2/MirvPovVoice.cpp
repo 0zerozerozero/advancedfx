@@ -5,8 +5,11 @@
 #include "ClientEntitySystem.h"
 #include "Globals.h"
 #include "MirvTime.h"
+#include "WrpConsole.h"
 
 #include "../deps/release/prop/cs2/sdk_src/public/cdll_int.h"
+#include "../deps/release/prop/cs2/sdk_src/public/icvar.h"
+#include "../deps/release/prop/cs2/sdk_src/public/tier1/convar.h"
 extern SOURCESDK::CS2::ISource2EngineToClient * g_pEngineToClient;
 
 #include "../shared/AfxConsole.h"
@@ -18,16 +21,20 @@ extern SOURCESDK::CS2::ISource2EngineToClient * g_pEngineToClient;
 
 #include <intrin.h>
 #include <limits.h>
+#include <stdint.h>
+#include <string.h>
 
 #pragma intrinsic(_ReturnAddress)
 
 static constexpr int kMirvPovIsPlayingDemoVtableIndex = 42;
 static constexpr int kMirvPovVoiceSeekThresholdTicks = 16;
+static constexpr int kMirvPovVoiceSeekClearRenderPasses = 3;
 static constexpr float kMirvPovSyntheticSpeakingSeconds = 0.65f;
 
+static bool g_MirvVoiceHudFixEnabled = false;
 static int g_MirvPovVoiceLastDemoTick = INT_MIN;
-static int g_MirvPovVoiceLastControllerIndex = -1;
-static int g_MirvPovVoiceLastTeam = -1;
+static int g_MirvPovVoiceClearRenderPasses = 0;
+static bool g_MirvPovVoiceHadDemoFile = false;
 static float g_MirvPovSyntheticSpeakingUntil[64] = {};
 static size_t g_MirvPovShowSpeakerRetAddr = 0;
 static size_t g_MirvPovServerVoiceDataAddr = 0;
@@ -45,45 +52,63 @@ static bool g_bMirvPovServerVoiceDataHooked = false;
 typedef __int64 (__fastcall * MirvPov_VoiceStatus_Get_t)();
 typedef __int64 (__fastcall * MirvPov_VoiceStatus_UpdateSpeakerStatus_t)(__int64 voiceStatus, unsigned int playerSlot, int localSlot, unsigned __int8 talking);
 
-class CEntityInstance * GetFakePovRadarController();
-int GetFakePovRadarControllerIndex();
+struct MirvPovVoiceMaskCvar {
+    const char * name;
+    SOURCESDK::CS2::ConVarHandle handle;
+    int previousValue = 0;
+    bool previousValueSaved = false;
+};
 
-void MirvPov_UpdateVoiceTeam() {
-    if(!MirvPov_IsEnabled() || !g_pEngineToClient) return;
+static MirvPovVoiceMaskCvar g_MirvPovVoiceMaskLow = { "tv_listen_voice_indices" };
+static MirvPovVoiceMaskCvar g_MirvPovVoiceMaskHigh = { "tv_listen_voice_indices_h" };
 
-    CEntityInstance * controller = GetFakePovRadarController();
-    int controllerIndex = GetFakePovRadarControllerIndex();
-    if(nullptr == controller || !controller->IsPlayerController()) return;
-    if(controllerIndex <= 0) controllerIndex = controller->GetHandle().GetEntryIndex();
+static SOURCESDK::CS2::Cvar_s * MirvPov_GetVoiceMaskCvar(MirvPovVoiceMaskCvar & state) {
+    if(!SOURCESDK::CS2::g_pCVar) return nullptr;
+    if(!state.handle.IsValid()) state.handle = SOURCESDK::CS2::g_pCVar->FindConVar(state.name, false);
+    return state.handle.IsValid() ? SOURCESDK::CS2::g_pCVar->GetCvar(state.handle.Get()) : nullptr;
+}
 
-    if(g_MirvPovVoiceLastControllerIndex == controllerIndex) return;
-    g_MirvPovVoiceLastControllerIndex = controllerIndex;
+static void MirvPov_SetVoiceMaskCvar(MirvPovVoiceMaskCvar & state, int value) {
+    SOURCESDK::CS2::Cvar_s * cvar = MirvPov_GetVoiceMaskCvar(state);
+    if(!cvar) return;
 
-    int team = controller->GetTeam();
-    if(team != 2 && team != 3) return;
-    if(g_MirvPovVoiceLastTeam == team) return;
+    if(!state.previousValueSaved) {
+        state.previousValue = cvar->m_Value.m_i32Value;
+        state.previousValueSaved = true;
+    }
+    if(cvar->m_Value.m_i32Value == value) return;
 
-    g_pEngineToClient->ExecuteClientCmd(0, 2 == team ? "mirv_script_voice t" : "mirv_script_voice ct", true);
-    g_MirvPovVoiceLastTeam = team;
+    SOURCESDK::CS2::CVValue_t oldValue = {};
+    SOURCESDK::CS2::CVValue_t newValue = {};
+    memcpy(&oldValue, &cvar->m_Value, sizeof(oldValue));
+    memcpy(&newValue, &cvar->m_Value, sizeof(newValue));
+    newValue.m_i32Value = value;
+    memcpy(&cvar->m_Value, &newValue, sizeof(newValue));
+    SOURCESDK::CS2::g_pCVar->CallChangeCallback(state.handle, 0, &newValue, &oldValue);
+}
+
+static void MirvPov_RestoreVoiceMaskCvar(MirvPovVoiceMaskCvar & state) {
+    if(!state.previousValueSaved) return;
+
+    SOURCESDK::CS2::Cvar_s * cvar = MirvPov_GetVoiceMaskCvar(state);
+    if(cvar) {
+        SOURCESDK::CS2::CVValue_t oldValue = {};
+        SOURCESDK::CS2::CVValue_t newValue = {};
+        memcpy(&oldValue, &cvar->m_Value, sizeof(oldValue));
+        memcpy(&newValue, &cvar->m_Value, sizeof(newValue));
+        newValue.m_i32Value = state.previousValue;
+        memcpy(&cvar->m_Value, &newValue, sizeof(newValue));
+        SOURCESDK::CS2::g_pCVar->CallChangeCallback(state.handle, 0, &newValue, &oldValue);
+    }
+    state.previousValueSaved = false;
 }
 
 static bool MirvPov_IsVoiceHudReady() {
     return g_MirvPovVoiceStatusGetAddr && g_MirvPovVoiceStatusUpdateSpeakerStatusAddr;
 }
 
-void MirvPov_ClearSyntheticSpeaking() {
-    for(int i = 0; i < 64; ++i) {
-        if(0.0f < g_MirvPovSyntheticSpeakingUntil[i]) {
-            __int64 voiceStatus = MirvPov_IsVoiceHudReady() ? ((MirvPov_VoiceStatus_Get_t)g_MirvPovVoiceStatusGetAddr)() : 0;
-            if(voiceStatus) ((MirvPov_VoiceStatus_UpdateSpeakerStatus_t)g_MirvPovVoiceStatusUpdateSpeakerStatusAddr)(voiceStatus, i, -1, 0);
-        }
-        g_MirvPovSyntheticSpeakingUntil[i] = 0.0f;
-    }
-}
-
 static void MirvPov_SetSyntheticSpeaking(unsigned int playerSlot, bool speaking) {
     if(64 <= playerSlot || !MirvPov_IsVoiceHudReady()) return;
-
     __int64 voiceStatus = ((MirvPov_VoiceStatus_Get_t)g_MirvPovVoiceStatusGetAddr)();
     if(!voiceStatus) return;
 
@@ -91,21 +116,68 @@ static void MirvPov_SetSyntheticSpeaking(unsigned int playerSlot, bool speaking)
     g_MirvPovSyntheticSpeakingUntil[playerSlot] = speaking ? g_MirvTime.curtime_get() + kMirvPovSyntheticSpeakingSeconds : 0.0f;
 }
 
+static void MirvPov_ForceClearSyntheticSpeaking() {
+    for(int i = 0; i < 64; ++i) {
+        if(0.0f < g_MirvPovSyntheticSpeakingUntil[i]) MirvPov_SetSyntheticSpeaking(i, false);
+        g_MirvPovSyntheticSpeakingUntil[i] = 0.0f;
+    }
+}
+
+static void MirvPov_RequestFullVoiceClear() {
+    if(g_MirvPovVoiceClearRenderPasses < kMirvPovVoiceSeekClearRenderPasses) {
+        g_MirvPovVoiceClearRenderPasses = kMirvPovVoiceSeekClearRenderPasses;
+    }
+}
+
+static bool MirvPov_TryClearAllSpeakingSlots() {
+    if(!MirvPov_IsVoiceHudReady()) return false;
+    __int64 voiceStatus = ((MirvPov_VoiceStatus_Get_t)g_MirvPovVoiceStatusGetAddr)();
+    if(!voiceStatus) return false;
+
+    auto updateSpeakerStatus = (MirvPov_VoiceStatus_UpdateSpeakerStatus_t)g_MirvPovVoiceStatusUpdateSpeakerStatusAddr;
+    for(unsigned int playerSlot = 0; playerSlot < 64; ++playerSlot) {
+        updateSpeakerStatus(voiceStatus, playerSlot, -1, 0);
+        g_MirvPovSyntheticSpeakingUntil[playerSlot] = 0.0f;
+    }
+    return true;
+}
+
+void MirvPov_ClearSyntheticSpeaking() {
+    MirvPov_ForceClearSyntheticSpeaking();
+}
+
 static bool MirvPov_IsVoicePlayerSlotOnWatchedTeam(unsigned int playerSlot) {
     if(64 <= playerSlot) return false;
 
-    int watchedTeam = g_MirvPovVoiceLastTeam;
-    if(watchedTeam != 2 && watchedTeam != 3) {
-        CEntityInstance * controller = GetFakePovRadarController();
-        if(nullptr == controller || !controller->IsPlayerController()) return false;
-        watchedTeam = controller->GetTeam();
-    }
+    CEntityInstance * watchedController = GetCurrentPovPlayerController();
+    if(nullptr == watchedController || !watchedController->IsPlayerController()) return false;
+    int watchedTeam = watchedController->GetTeam();
     if(watchedTeam != 2 && watchedTeam != 3) return false;
 
     CEntityInstance * voiceController = GetEntityFromIndex((int)playerSlot + 1);
-    if(nullptr == voiceController || !voiceController->IsPlayerController()) return false;
+    return nullptr != voiceController
+        && voiceController->IsPlayerController()
+        && voiceController->GetTeam() == watchedTeam;
+}
 
-    return voiceController->GetTeam() == watchedTeam;
+void MirvPov_UpdateVoiceTeam() {
+    CEntityInstance * watchedController = GetCurrentPovPlayerController();
+    if(nullptr == watchedController || !watchedController->IsPlayerController()) return;
+
+    int watchedTeam = watchedController->GetTeam();
+    if(watchedTeam != 2 && watchedTeam != 3) return;
+
+    uint32_t lowMask = 0;
+    uint32_t highMask = 0;
+    for(unsigned int playerSlot = 0; playerSlot < 64; ++playerSlot) {
+        CEntityInstance * controller = GetEntityFromIndex((int)playerSlot + 1);
+        if(nullptr == controller || !controller->IsPlayerController() || controller->GetTeam() != watchedTeam) continue;
+        if(playerSlot < 32) lowMask |= uint32_t(1) << playerSlot;
+        else highMask |= uint32_t(1) << (playerSlot - 32);
+    }
+
+    MirvPov_SetVoiceMaskCvar(g_MirvPovVoiceMaskLow, (int32_t)lowMask);
+    MirvPov_SetVoiceMaskCvar(g_MirvPovVoiceMaskHigh, (int32_t)highMask);
 }
 
 static void MirvPov_UpdateSyntheticSpeakingExpiry() {
@@ -120,16 +192,18 @@ static void MirvPov_UpdateSyntheticSpeakingExpiry() {
 static bool New_MirvPov_IsPlayingDemo(void * This) {
     void * ret = _ReturnAddress();
     bool result = g_Org_MirvPov_IsPlayingDemo(This);
-    if(MirvPov_IsEnabled() && g_MirvPovShowSpeakerRetAddr && (size_t)ret == g_MirvPovShowSpeakerRetAddr) {
-        return false;
-    }
+    if((MirvPov_IsEnabled() || g_MirvVoiceHudFixEnabled)
+        && g_MirvPovShowSpeakerRetAddr
+        && (size_t)ret == g_MirvPovShowSpeakerRetAddr) return false;
     return result;
 }
 
 static __int64 __fastcall New_MirvPov_ServerVoiceData(__int64 This, __int64 msg) {
     unsigned int playerSlot = msg ? *(unsigned int *)(msg + 104) : 0xFFFFFFFF;
     __int64 result = g_Org_MirvPov_ServerVoiceData(This, msg);
-    if(MirvPov_IsEnabled() && MirvPov_IsVoicePlayerSlotOnWatchedTeam(playerSlot)) {
+    if(0 == g_MirvPovVoiceClearRenderPasses
+        && playerSlot < 64
+        && (g_MirvVoiceHudFixEnabled || (MirvPov_IsEnabled() && MirvPov_IsVoicePlayerSlotOnWatchedTeam(playerSlot)))) {
         MirvPov_SetSyntheticSpeaking(playerSlot, true);
     }
     return result;
@@ -139,7 +213,7 @@ static bool MirvPov_ResolveVoiceHud(HMODULE clientDll) {
     if(!clientDll) return false;
 
     if(!g_MirvPovShowSpeakerRetAddr) {
-        size_t matchAddr = getAddress(clientDll, "48 63 C3 48 8D 0D ?? ?? ?? ?? C6 84 08 ?? ?? ?? ?? 01 48 8B 0D ?? ?? ?? ?? 48 8B 01 FF 90 ?? ?? ?? ?? 84 C0 0F 85");
+        size_t matchAddr = getAddress(clientDll, "48 63 ?? 48 8D 0D ?? ?? ?? ?? C6 84 08 ?? ?? ?? ?? 01 48 8B 0D ?? ?? ?? ?? 48 8B 01 FF 90 ?? ?? ?? ?? 84 C0 0F 85");
         if(matchAddr) g_MirvPovShowSpeakerRetAddr = matchAddr + 0x22;
     }
     if(!g_MirvPovServerVoiceDataAddr) {
@@ -151,21 +225,17 @@ static bool MirvPov_ResolveVoiceHud(HMODULE clientDll) {
     if(!g_MirvPovVoiceStatusUpdateSpeakerStatusAddr) {
         g_MirvPovVoiceStatusUpdateSpeakerStatusAddr = getAddress(clientDll, "44 88 4C 24 ?? 44 89 44 24 ?? 89 54 24");
     }
-
     return g_MirvPovShowSpeakerRetAddr && g_MirvPovServerVoiceDataAddr && MirvPov_IsVoiceHudReady();
 }
 
-void MirvPov_HookVoiceHud(HMODULE clientDll) {
-    if(!MirvPov_ResolveVoiceHud(clientDll)) {
-        advancedfx::Message("[mirv_pov_voice_hud] voice HUD patterns not found\n");
-        return;
-    }
+static bool MirvPov_EnsureVoiceHudHook(HMODULE clientDll) {
+    if(!MirvPov_ResolveVoiceHud(clientDll)) return false;
 
     if(!g_bMirvPovIsPlayingDemoHooked) {
-        if(!g_pEngineToClient) return;
+        if(!g_pEngineToClient) return false;
         void ** vtable = *(void ***)g_pEngineToClient;
-        if(!vtable) return;
-        if(!AfxDetourPtr((PVOID*)&(vtable[kMirvPovIsPlayingDemoVtableIndex]), New_MirvPov_IsPlayingDemo, (PVOID*)&g_Org_MirvPov_IsPlayingDemo)) return;
+        if(!vtable) return false;
+        if(!AfxDetourPtr((PVOID*)&(vtable[kMirvPovIsPlayingDemoVtableIndex]), New_MirvPov_IsPlayingDemo, (PVOID*)&g_Org_MirvPov_IsPlayingDemo)) return false;
         g_bMirvPovIsPlayingDemoHooked = true;
     }
 
@@ -174,36 +244,97 @@ void MirvPov_HookVoiceHud(HMODULE clientDll) {
         DetourTransactionBegin();
         DetourUpdateThread(GetCurrentThread());
         DetourAttach(&(PVOID&)g_Org_MirvPov_ServerVoiceData, New_MirvPov_ServerVoiceData);
-        if(NO_ERROR != DetourTransactionCommit()) return;
+        if(NO_ERROR != DetourTransactionCommit()) return false;
         g_bMirvPovServerVoiceDataHooked = true;
+    }
+    return true;
+}
+
+void MirvPov_HookVoiceHud(HMODULE clientDll) {
+    if(!MirvPov_EnsureVoiceHudHook(clientDll)) {
+        advancedfx::Message("[mirv_pov_voice_hud] voice HUD patterns or hooks not available\n");
     }
 }
 
-void MirvPov_UpdateVoiceHud() {
-    if(!MirvPov_IsEnabled() || !g_pEngineToClient) return;
+static void MirvPov_UpdateVoiceRuntime() {
+    if(!g_pEngineToClient) return;
 
     SOURCESDK::CS2::IDemoFile * pDemoFile = g_pEngineToClient->GetDemoFile();
     if(!pDemoFile) {
+        if(g_MirvPovVoiceHadDemoFile) {
+            g_pEngineToClient->ExecuteClientCmd(0, "servervoice_clear", true);
+            MirvPov_RequestFullVoiceClear();
+        }
+        g_MirvPovVoiceHadDemoFile = false;
         g_MirvPovVoiceLastDemoTick = INT_MIN;
-        MirvPov_ClearSyntheticSpeaking();
         return;
     }
 
+    g_MirvPovVoiceHadDemoFile = true;
     int curTick = pDemoFile->GetDemoTick();
     if(g_MirvPovVoiceLastDemoTick != INT_MIN) {
         int delta = curTick - g_MirvPovVoiceLastDemoTick;
         if(delta < 0 || delta > kMirvPovVoiceSeekThresholdTicks) {
             g_pEngineToClient->ExecuteClientCmd(0, "servervoice_clear", true);
-            MirvPov_ClearSyntheticSpeaking();
+            MirvPov_RequestFullVoiceClear();
         }
     }
     g_MirvPovVoiceLastDemoTick = curTick;
-    MirvPov_UpdateVoiceTeam();
     MirvPov_UpdateSyntheticSpeakingExpiry();
+}
+
+void MirvPov_UpdateVoiceHud() {
+    if(!MirvPov_IsEnabled()) return;
+    MirvPov_UpdateVoiceTeam();
+    MirvPov_UpdateVoiceRuntime();
+}
+
+void MirvVoiceHudFix_OnRenderPass() {
+    if(MirvPov_IsEnabled()) MirvPov_UpdateVoiceTeam();
+    if(MirvPov_IsEnabled() || g_MirvVoiceHudFixEnabled) MirvPov_UpdateVoiceRuntime();
+}
+
+void MirvPovVoice_AfterRenderPass() {
+    if(0 < g_MirvPovVoiceClearRenderPasses && MirvPov_TryClearAllSpeakingSlots()) {
+        --g_MirvPovVoiceClearRenderPasses;
+    }
 }
 
 void MirvPov_ResetVoiceHud() {
     g_MirvPovVoiceLastDemoTick = INT_MIN;
-    g_MirvPovVoiceLastControllerIndex = -1;
-    g_MirvPovVoiceLastTeam = -1;
+    g_MirvPovVoiceHadDemoFile = false;
+    MirvPov_RestoreVoiceMaskCvar(g_MirvPovVoiceMaskLow);
+    MirvPov_RestoreVoiceMaskCvar(g_MirvPovVoiceMaskHigh);
+    if(!g_MirvVoiceHudFixEnabled) MirvPov_RequestFullVoiceClear();
+}
+
+CON_COMMAND(mirv_voiceHudFix, "Show speaker (voice) icons in demo HUD; resets them on demo seek.") {
+    int argc = args->ArgC();
+    auto arg0 = args->ArgV(0);
+
+    if(2 <= argc) {
+        bool enable = 0 != atoi(args->ArgV(1));
+        if(enable && !MirvPov_EnsureVoiceHudHook(GetModuleHandleA("client.dll"))) {
+            advancedfx::Warning("%s: voice HUD patterns or engine interface are not ready.\n", arg0);
+            return;
+        }
+
+        g_MirvVoiceHudFixEnabled = enable;
+        g_MirvPovVoiceLastDemoTick = INT_MIN;
+        g_MirvPovVoiceHadDemoFile = false;
+        if(!enable && !MirvPov_IsEnabled()) MirvPov_RequestFullVoiceClear();
+        advancedfx::Message("%s: %s\n", arg0, enable ? "enabled" : "disabled");
+        return;
+    }
+
+    advancedfx::Message(
+        "%s <0|1> - Show speaker (voice) icons in demo playback (default: 0).\n"
+        "Current value: %d\n"
+        "Speaker code site %s.\n"
+        "Server voice hook site %s.\n"
+        "VoiceStatus helpers %s.\n",
+        arg0, g_MirvVoiceHudFixEnabled ? 1 : 0,
+        g_MirvPovShowSpeakerRetAddr ? "resolved" : "NOT FOUND",
+        g_MirvPovServerVoiceDataAddr ? "resolved" : "NOT FOUND",
+        MirvPov_IsVoiceHudReady() ? "resolved" : "NOT FOUND");
 }

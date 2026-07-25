@@ -7,3 +7,5 @@ void MirvPov_ResetVoiceHud();
 void MirvPov_UpdateVoiceTeam();
 void MirvPov_UpdateVoiceHud();
 void MirvPov_ClearSyntheticSpeaking();
+void MirvVoiceHudFix_OnRenderPass();
+void MirvPovVoice_AfterRenderPass();
