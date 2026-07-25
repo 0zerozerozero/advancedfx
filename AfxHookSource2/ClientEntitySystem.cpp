@@ -7,6 +7,7 @@
 #include "MirvPovFeedback.h"
 #include "MirvPovHud.h"
 #include "MirvPovRadar.h"
+#include "MirvPovTeamID.h"
 #include "MirvPovVoice.h"
 
 #include "../deps/release/prop/cs2/sdk_src/public/cdll_int.h"
@@ -1362,6 +1363,7 @@ void MirvPov_Disable() {
     MirvPov_RemoveFlashDataUpdateHook();
     MirvPovHud_RemovePatches();
     MirvPov_RemoveRadarPatches();
+    MirvPovTeamID_RemovePatches();
     MirvPov_ClearSyntheticSpeaking();
     MirvPov_ResetVoiceHud();
     g_MirvPovEnabled = false;
