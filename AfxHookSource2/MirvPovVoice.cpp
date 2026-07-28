@@ -5,6 +5,7 @@
 #include "ClientEntitySystem.h"
 #include "Globals.h"
 #include "MirvTime.h"
+#include "SchemaSystem.h"
 #include "WrpConsole.h"
 
 #include "../deps/release/prop/cs2/sdk_src/public/cdll_int.h"
@@ -23,6 +24,7 @@ extern SOURCESDK::CS2::ISource2EngineToClient * g_pEngineToClient;
 #include <limits.h>
 #include <stdint.h>
 #include <string.h>
+#include <unordered_set>
 
 #pragma intrinsic(_ReturnAddress)
 
@@ -31,7 +33,13 @@ static constexpr int kMirvPovVoiceSeekThresholdTicks = 16;
 static constexpr int kMirvPovVoiceSeekClearRenderPasses = 3;
 static constexpr float kMirvPovSyntheticSpeakingSeconds = 0.65f;
 
-static bool g_MirvVoiceHudFixEnabled = false;
+static bool g_MirvVoiceBanFixEnabled = false;
+static uint8_t * g_MirvVoiceBanPatchAddr = nullptr;
+static uint8_t g_MirvVoiceBanOriginalImmediate = 0;
+static bool g_MirvVoiceBanPatchResolveAttempted = false;
+static bool g_MirvVoiceBanPatchApplied = false;
+static size_t g_MirvVoiceBanSetPlayerBlockedStateAddr = 0;
+static std::unordered_set<uint64_t> g_MirvVoiceBanClearedSteamIds;
 static int g_MirvPovVoiceLastDemoTick = INT_MIN;
 static int g_MirvPovVoiceClearRenderPasses = 0;
 static bool g_MirvPovVoiceHadDemoFile = false;
@@ -51,6 +59,11 @@ static bool g_bMirvPovServerVoiceDataHooked = false;
 
 typedef __int64 (__fastcall * MirvPov_VoiceStatus_Get_t)();
 typedef __int64 (__fastcall * MirvPov_VoiceStatus_UpdateSpeakerStatus_t)(__int64 voiceStatus, unsigned int playerSlot, int localSlot, unsigned __int8 talking);
+typedef void * (__fastcall * MirvVoiceBan_SetPlayerBlockedState_t)(
+    __int64 voiceStatus,
+    uint64_t steamId,
+    unsigned __int8 blocked,
+    unsigned __int8 persistBlocked);
 
 struct MirvPovVoiceMaskCvar {
     const char * name;
@@ -105,6 +118,140 @@ static void MirvPov_RestoreVoiceMaskCvar(MirvPovVoiceMaskCvar & state) {
 
 static bool MirvPov_IsVoiceHudReady() {
     return g_MirvPovVoiceStatusGetAddr && g_MirvPovVoiceStatusUpdateSpeakerStatusAddr;
+}
+
+static bool MirvVoiceBanFix_ResolvePatch() {
+    if(g_MirvVoiceBanPatchAddr) return true;
+
+    HMODULE clientDll = GetModuleHandleW(L"client.dll");
+    if(!clientDll || g_MirvVoiceBanPatchResolveAttempted) return false;
+    g_MirvVoiceBanPatchResolveAttempted = true;
+
+    // Communication-abuse processing passes the same true value in r9 and r8
+    // to CVoiceStatus::SetPlayerBlockedState. Changing the shared immediate to
+    // zero leaves the native processing path intact while clearing both flags.
+    Afx::BinUtils::ImageSectionsReader sections(clientDll);
+    Afx::BinUtils::MemRange textRange = Afx::BinUtils::MemRange::FromEmpty();
+    if(!sections.Eof()) textRange = sections.GetMemRange();
+    if(textRange.IsEmpty()) {
+        advancedfx::Warning("[mirv_voicebanFix] client.dll text section not found.\n");
+        return false;
+    }
+
+    const char * pattern =
+        "E8 ?? ?? ?? ?? 41 B1 01 49 8B D5 45 0F B6 C1 48 8B C8 E8 ?? ?? ?? ?? 48 63 05";
+    auto sequence = Afx::BinUtils::FindPatternString(textRange, pattern);
+    if(sequence.IsEmpty()) {
+        advancedfx::Warning("[mirv_voicebanFix] communication-abuse block call-site not found.\n");
+        return false;
+    }
+    auto remaining = Afx::BinUtils::MemRange(sequence.Start + 1, textRange.End);
+    if(!Afx::BinUtils::FindPatternString(remaining, pattern).IsEmpty()) {
+        advancedfx::Warning("[mirv_voicebanFix] communication-abuse block call-site is not unique.\n");
+        return false;
+    }
+
+    uint8_t * sequenceBytes = reinterpret_cast<uint8_t *>(sequence.Start);
+    if(0xE8 != sequenceBytes[0] || 0xE8 != sequenceBytes[18]) {
+        advancedfx::Warning("[mirv_voicebanFix] communication-abuse block call-site has unexpected calls.\n");
+        return false;
+    }
+
+    int32_t getVoiceStatusRelative = 0;
+    int32_t setBlockedRelative = 0;
+    memcpy(&getVoiceStatusRelative, sequenceBytes + 1, sizeof(getVoiceStatusRelative));
+    memcpy(&setBlockedRelative, sequenceBytes + 19, sizeof(setBlockedRelative));
+    const size_t getVoiceStatusAddr = static_cast<size_t>(
+        static_cast<intptr_t>(sequence.Start + 5) + getVoiceStatusRelative);
+    const size_t setBlockedAddr = static_cast<size_t>(
+        static_cast<intptr_t>(sequence.Start + 23) + setBlockedRelative);
+    if(getVoiceStatusAddr < textRange.Start || textRange.End <= getVoiceStatusAddr
+        || setBlockedAddr < textRange.Start || textRange.End <= setBlockedAddr) {
+        advancedfx::Warning("[mirv_voicebanFix] communication-abuse block call targets are invalid.\n");
+        return false;
+    }
+
+    uint8_t * immediate = reinterpret_cast<uint8_t *>(sequence.Start + 7);
+    if(0x01 != *immediate) {
+        advancedfx::Warning("[mirv_voicebanFix] communication-abuse block call-site has unexpected bytes.\n");
+        return false;
+    }
+
+    g_MirvVoiceBanPatchAddr = immediate;
+    g_MirvVoiceBanOriginalImmediate = *immediate;
+    g_MirvPovVoiceStatusGetAddr = getVoiceStatusAddr;
+    g_MirvVoiceBanSetPlayerBlockedStateAddr = setBlockedAddr;
+    return true;
+}
+
+static bool MirvVoiceBanFix_SetPatch(bool enabled) {
+    if(enabled == g_MirvVoiceBanPatchApplied) return true;
+    if(!MirvVoiceBanFix_ResolvePatch()) return false;
+
+    const uint8_t expectedCurrent = g_MirvVoiceBanPatchApplied
+        ? 0x00
+        : g_MirvVoiceBanOriginalImmediate;
+    if(expectedCurrent != *g_MirvVoiceBanPatchAddr) {
+        advancedfx::Warning("[mirv_voicebanFix] communication-abuse block call-site changed unexpectedly.\n");
+        return false;
+    }
+
+    DWORD oldProtect = 0;
+    if(!VirtualProtect(g_MirvVoiceBanPatchAddr, 1, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+        advancedfx::Warning("[mirv_voicebanFix] VirtualProtect failed (error %lu).\n", GetLastError());
+        return false;
+    }
+
+    const uint8_t previous = *g_MirvVoiceBanPatchAddr;
+    const uint8_t expected = enabled ? 0x00 : g_MirvVoiceBanOriginalImmediate;
+    *g_MirvVoiceBanPatchAddr = expected;
+    const bool written = expected == *g_MirvVoiceBanPatchAddr
+        && 0 != FlushInstructionCache(GetCurrentProcess(), g_MirvVoiceBanPatchAddr, 1);
+    if(!written) {
+        *g_MirvVoiceBanPatchAddr = previous;
+        FlushInstructionCache(GetCurrentProcess(), g_MirvVoiceBanPatchAddr, 1);
+    }
+
+    DWORD unused = 0;
+    if(!VirtualProtect(g_MirvVoiceBanPatchAddr, 1, oldProtect, &unused)) {
+        advancedfx::Warning("[mirv_voicebanFix] Failed to restore page protection (error %lu).\n", GetLastError());
+    }
+    if(!written) {
+        advancedfx::Warning("[mirv_voicebanFix] Failed to update communication-abuse block call-site.\n");
+        return false;
+    }
+
+    g_MirvVoiceBanPatchApplied = enabled;
+    return true;
+}
+
+static bool MirvVoiceBanFix_TryGetAbuseMutedSteamId(
+    CEntityInstance * controller,
+    ptrdiff_t muteOffset,
+    uint64_t & steamId) {
+    __try {
+        if(nullptr == controller || !controller->IsPlayerController()) return false;
+        steamId = controller->GetSteamId();
+        if(0 == steamId) return false;
+        const bool * abuseMuted = reinterpret_cast<const bool *>(
+            reinterpret_cast<const uint8_t *>(controller) + muteOffset);
+        return *abuseMuted;
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+static bool MirvVoiceBanFix_TryClearBlockedState(__int64 voiceStatus, uint64_t steamId) {
+    __try {
+        ((MirvVoiceBan_SetPlayerBlockedState_t)g_MirvVoiceBanSetPlayerBlockedStateAddr)(
+            voiceStatus,
+            steamId,
+            0,
+            0);
+        return true;
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
 }
 
 static void MirvPov_SetSyntheticSpeaking(unsigned int playerSlot, bool speaking) {
@@ -192,7 +339,7 @@ static void MirvPov_UpdateSyntheticSpeakingExpiry() {
 static bool New_MirvPov_IsPlayingDemo(void * This) {
     void * ret = _ReturnAddress();
     bool result = g_Org_MirvPov_IsPlayingDemo(This);
-    if((MirvPov_IsEnabled() || g_MirvVoiceHudFixEnabled)
+    if(MirvPov_IsEnabled()
         && g_MirvPovShowSpeakerRetAddr
         && (size_t)ret == g_MirvPovShowSpeakerRetAddr) return false;
     return result;
@@ -203,7 +350,8 @@ static __int64 __fastcall New_MirvPov_ServerVoiceData(__int64 This, __int64 msg)
     __int64 result = g_Org_MirvPov_ServerVoiceData(This, msg);
     if(0 == g_MirvPovVoiceClearRenderPasses
         && playerSlot < 64
-        && (g_MirvVoiceHudFixEnabled || (MirvPov_IsEnabled() && MirvPov_IsVoicePlayerSlotOnWatchedTeam(playerSlot)))) {
+        && MirvPov_IsEnabled()
+        && MirvPov_IsVoicePlayerSlotOnWatchedTeam(playerSlot)) {
         MirvPov_SetSyntheticSpeaking(playerSlot, true);
     }
     return result;
@@ -252,7 +400,7 @@ static bool MirvPov_EnsureVoiceHudHook(HMODULE clientDll) {
 
 void MirvPov_HookVoiceHud(HMODULE clientDll) {
     if(!MirvPov_EnsureVoiceHudHook(clientDll)) {
-        advancedfx::Message("[mirv_pov_voice_hud] voice HUD patterns or hooks not available\n");
+        advancedfx::Warning("[mirv_pov_voice_hud] voice HUD patterns or hooks not available\n");
     }
 }
 
@@ -289,9 +437,39 @@ void MirvPov_UpdateVoiceHud() {
     MirvPov_UpdateVoiceRuntime();
 }
 
-void MirvVoiceHudFix_OnRenderPass() {
-    if(MirvPov_IsEnabled()) MirvPov_UpdateVoiceTeam();
-    if(MirvPov_IsEnabled() || g_MirvVoiceHudFixEnabled) MirvPov_UpdateVoiceRuntime();
+static void MirvVoiceBanFix_Update() {
+    const bool enabled = MirvPov_IsEnabled() || g_MirvVoiceBanFixEnabled;
+    if(!MirvVoiceBanFix_SetPatch(enabled)) return;
+    if(!enabled) {
+        g_MirvVoiceBanClearedSteamIds.clear();
+        return;
+    }
+
+    const ptrdiff_t muteOffset = g_clientDllOffsets.CCSPlayerController.m_bHasCommunicationAbuseMute;
+    if(muteOffset < 0 || !g_MirvPovVoiceStatusGetAddr || !g_MirvVoiceBanSetPlayerBlockedStateAddr) return;
+
+    const __int64 voiceStatus = ((MirvPov_VoiceStatus_Get_t)g_MirvPovVoiceStatusGetAddr)();
+    if(!voiceStatus) return;
+
+    for(int playerSlot = 0; playerSlot < 64; ++playerSlot) {
+        uint64_t steamId = 0;
+        if(!MirvVoiceBanFix_TryGetAbuseMutedSteamId(
+            GetEntityFromIndex(playerSlot + 1),
+            muteOffset,
+            steamId)) continue;
+        if(g_MirvVoiceBanClearedSteamIds.end() != g_MirvVoiceBanClearedSteamIds.find(steamId)) continue;
+        if(MirvVoiceBanFix_TryClearBlockedState(voiceStatus, steamId)) {
+            g_MirvVoiceBanClearedSteamIds.insert(steamId);
+        }
+    }
+}
+
+void MirvPovVoice_OnRenderPass() {
+    if(MirvPov_IsEnabled()) {
+        MirvPov_UpdateVoiceTeam();
+        MirvPov_UpdateVoiceRuntime();
+    }
+    MirvVoiceBanFix_Update();
 }
 
 void MirvPovVoice_AfterRenderPass() {
@@ -305,36 +483,23 @@ void MirvPov_ResetVoiceHud() {
     g_MirvPovVoiceHadDemoFile = false;
     MirvPov_RestoreVoiceMaskCvar(g_MirvPovVoiceMaskLow);
     MirvPov_RestoreVoiceMaskCvar(g_MirvPovVoiceMaskHigh);
-    if(!g_MirvVoiceHudFixEnabled) MirvPov_RequestFullVoiceClear();
+    MirvPov_RequestFullVoiceClear();
 }
 
-CON_COMMAND(mirv_voiceHudFix, "Show speaker (voice) icons in demo HUD; resets them on demo seek.") {
+CON_COMMAND(mirv_voicebanFix, "Ignore communication-abuse mute flags without modifying voice messages.") {
     int argc = args->ArgC();
     auto arg0 = args->ArgV(0);
 
     if(2 <= argc) {
         bool enable = 0 != atoi(args->ArgV(1));
-        if(enable && !MirvPov_EnsureVoiceHudHook(GetModuleHandleA("client.dll"))) {
-            advancedfx::Warning("%s: voice HUD patterns or engine interface are not ready.\n", arg0);
-            return;
-        }
-
-        g_MirvVoiceHudFixEnabled = enable;
-        g_MirvPovVoiceLastDemoTick = INT_MIN;
-        g_MirvPovVoiceHadDemoFile = false;
-        if(!enable && !MirvPov_IsEnabled()) MirvPov_RequestFullVoiceClear();
+        g_MirvVoiceBanFixEnabled = enable;
+        MirvVoiceBanFix_Update();
         advancedfx::Message("%s: %s\n", arg0, enable ? "enabled" : "disabled");
         return;
     }
 
     advancedfx::Message(
-        "%s <0|1> - Show speaker (voice) icons in demo playback (default: 0).\n"
-        "Current value: %d\n"
-        "Speaker code site %s.\n"
-        "Server voice hook site %s.\n"
-        "VoiceStatus helpers %s.\n",
-        arg0, g_MirvVoiceHudFixEnabled ? 1 : 0,
-        g_MirvPovShowSpeakerRetAddr ? "resolved" : "NOT FOUND",
-        g_MirvPovServerVoiceDataAddr ? "resolved" : "NOT FOUND",
-        MirvPov_IsVoiceHudReady() ? "resolved" : "NOT FOUND");
+        "%s <0|1> - Prevent communication-abuse processing from setting local block flags (default: 0).\n"
+        "Current value: %d\n",
+        arg0, g_MirvVoiceBanFixEnabled ? 1 : 0);
 }

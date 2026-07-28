@@ -60,6 +60,7 @@ struct ClientDllOffsets_t {
 		ptrdiff_t m_sSanitizedPlayerName = 0; // CUtlString
 		ptrdiff_t m_hPlayerPawn = 0; // CHandle< C_CSPlayerPawn >
 		ptrdiff_t m_hObserverPawn = 0; // CHandle< C_CSObserverPawn >
+		ptrdiff_t m_bHasCommunicationAbuseMute = -1; // bool
 	} CCSPlayerController;
 
 	struct C_BasePlayerPawn {

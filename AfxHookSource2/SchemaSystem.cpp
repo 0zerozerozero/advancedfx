@@ -108,6 +108,12 @@ void initSchemaSystemOffsets()
 	GET_OFFSET_CHECK(g_clientDllOffsets.CCSPlayerController.m_sSanitizedPlayerName, "client.dll", "CCSPlayerController", "m_sSanitizedPlayerName");
 	GET_OFFSET_CHECK(g_clientDllOffsets.CCSPlayerController.m_hPlayerPawn, "client.dll", "CCSPlayerController", "m_hPlayerPawn");
 	GET_OFFSET_CHECK(g_clientDllOffsets.CCSPlayerController.m_hObserverPawn, "client.dll", "CCSPlayerController", "m_hObserverPawn");
+	if (!getOffset(&g_clientDllOffsets.CCSPlayerController.m_bHasCommunicationAbuseMute,
+		"client.dll", "CCSPlayerController", "m_bHasCommunicationAbuseMute")
+		&& !getOffset(&g_clientDllOffsets.CCSPlayerController.m_bHasCommunicationAbuseMute,
+			"client.dll", "C_CSPlayerController", "m_bHasCommunicationAbuseMute")) {
+		advancedfx::Warning("SchemaSystem optional offset lookup failed: CCSPlayerController.m_bHasCommunicationAbuseMute\n");
+	}
 	GET_OFFSET_CHECK(g_clientDllOffsets.C_BasePlayerPawn.m_hController, "client.dll", "C_BasePlayerPawn", "m_hController");
 	GET_OFFSET_CHECK(g_clientDllOffsets.C_BasePlayerPawn.m_pWeaponServices, "client.dll", "C_BasePlayerPawn", "m_pWeaponServices");
 	GET_OFFSET_CHECK(g_clientDllOffsets.C_BasePlayerPawn.m_pObserverServices, "client.dll", "C_BasePlayerPawn", "m_pObserverServices");
