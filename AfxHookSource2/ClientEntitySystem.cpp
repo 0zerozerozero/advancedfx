@@ -8,6 +8,7 @@
 #include "MirvPovHud.h"
 #include "MirvPovRadar.h"
 #include "MirvPovSoundCircle.h"
+#include "MirvPovTeamHealth.h"
 #include "MirvPovTeamID.h"
 #include "MirvPovVoice.h"
 
@@ -1165,6 +1166,7 @@ void MirvPov_Enable(HMODULE clientDll) {
     g_MirvPovEnabled = true;
     MirvPovFeedback_Initialize(clientDll);
     MirvPovSoundCircle_Initialize(clientDll);
+    MirvPovTeamHealth_Initialize(clientDll);
     MirvPov_UpdateVoiceTeam();
 }
 
