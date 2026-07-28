@@ -21,6 +21,11 @@ class CEntityInstance * GetCurrentPovPlayerPawn();
 class CEntityInstance * GetCurrentPovPlayerController();
 class CEntityInstance * GetEffectiveSplitScreenPlayer(int slot);
 bool MirvPov_IsEnabled();
+
+void * MirvPov_PushHookReturnAddress(void * returnAddress);
+void * MirvPov_GetHookReturnAddress();
+void MirvPov_PopHookReturnAddress(void * previous);
+
 void MirvPov_Enable(HMODULE clientDll);
 void MirvPov_Disable();
 void MirvPov_UpdateSeekDetection();

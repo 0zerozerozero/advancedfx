@@ -865,6 +865,24 @@ bool MirvPov_IsEnabled() {
     return g_MirvPovEnabled;
 }
 
+namespace {
+thread_local void * g_MirvPovHookReturnAddress = nullptr;
+}
+
+void * MirvPov_PushHookReturnAddress(void * returnAddress) {
+    void * previous = g_MirvPovHookReturnAddress;
+    if(nullptr == previous) g_MirvPovHookReturnAddress = returnAddress;
+    return previous;
+}
+
+void * MirvPov_GetHookReturnAddress() {
+    return g_MirvPovHookReturnAddress;
+}
+
+void MirvPov_PopHookReturnAddress(void * previous) {
+    g_MirvPovHookReturnAddress = previous;
+}
+
 void MirvPov_RestorePersistentIdentity() {
 }
 

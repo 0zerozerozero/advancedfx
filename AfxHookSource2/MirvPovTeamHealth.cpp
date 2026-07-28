@@ -128,11 +128,14 @@ int GetTeamCounterContextIndex(void * address)
 
 CEntityInstance * __fastcall New_GetLocalPlayerController()
 {
+    void * previousReturnAddress = MirvPov_PushHookReturnAddress(_ReturnAddress());
+    void * returnAddress = MirvPov_GetHookReturnAddress();
     CEntityInstance * nativeController = g_OrgGetLocalPlayerController();
+    MirvPov_PopHookReturnAddress(previousReturnAddress);
     if(!MirvPov_IsEnabled()
         || TargetRelation::Unknown == g_TargetRelation) return nativeController;
 
-    int contextIndex = GetTeamCounterContextIndex(_ReturnAddress());
+    int contextIndex = GetTeamCounterContextIndex(returnAddress);
     if(contextIndex < 0) return nativeController;
 
     __try {

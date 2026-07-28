@@ -138,10 +138,12 @@ int GetNativeSoundRadius(void * soundEventInterface, uint32_t eventId)
 
 CEntityInstance * __fastcall New_GetLocalPawn()
 {
+    void * previousReturnAddress = MirvPov_PushHookReturnAddress(_ReturnAddress());
+    void * returnAddress = MirvPov_GetHookReturnAddress();
     CEntityInstance * nativePawn = g_OrgGetLocalPawn();
+    MirvPov_PopHookReturnAddress(previousReturnAddress);
     if(!MirvPov_IsEnabled()) return nativePawn;
 
-    void * returnAddress = _ReturnAddress();
     int gate = returnAddress == g_SoundGateReturnAddresses[0]
         ? 0
         : (returnAddress == g_SoundGateReturnAddresses[1]
