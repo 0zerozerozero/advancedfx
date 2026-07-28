@@ -152,7 +152,7 @@ static bool g_bFlashDownHudGatePatched = false;
 static bool MirvPovHud_PatchTwoBytes(uint8_t* patchAddr, const uint8_t patchBytes[2], uint8_t originalBytes[2], const char* name) {
     DWORD oldProtect;
     if(!VirtualProtect(patchAddr, 2, PAGE_EXECUTE_READWRITE, &oldProtect)) {
-        advancedfx::Message("[mirv_pov_flash] VirtualProtect failed for %s (error %lu)\n", name, GetLastError());
+        advancedfx::Warning("[mirv_pov_flash] VirtualProtect failed for %s (error %lu)\n", name, GetLastError());
         return false;
     }
 
@@ -194,20 +194,20 @@ static bool MirvPovHud_ApplyFlashDownHudGatePatch(HMODULE clientDll) {
 
     const size_t matchAddr = getAddress(clientDll, "84 C0 74 4C 8B 85 B0 02 00 00 49 8D 8D 48 03 00 00");
     if(0 == matchAddr) {
-        advancedfx::Message("[mirv_pov_flash] flash down-HUD gate pattern not found\n");
+        advancedfx::Warning("[mirv_pov_flash] flash down-HUD gate pattern not found\n");
         return false;
     }
 
     uint8_t * testAddr = (uint8_t *)matchAddr;
     uint8_t * patchAddr = testAddr - 5;
     if(0xE8 != patchAddr[0]) {
-        advancedfx::Message("[mirv_pov_flash] flash down-HUD gate call-site has unexpected opcode %02X\n", patchAddr[0]);
+        advancedfx::Warning("[mirv_pov_flash] flash down-HUD gate call-site has unexpected opcode.\n");
         return false;
     }
 
     DWORD oldProtect;
     if(!VirtualProtect(patchAddr, 5, PAGE_EXECUTE_READWRITE, &oldProtect)) {
-        advancedfx::Message("[mirv_pov_flash] VirtualProtect failed for flash down-HUD gate (error %lu)\n", GetLastError());
+        advancedfx::Warning("[mirv_pov_flash] VirtualProtect failed for flash down-HUD gate (error %lu)\n", GetLastError());
         return false;
     }
 
@@ -231,7 +231,6 @@ static bool MirvPovHud_ApplyFlashDownHudGatePatch(HMODULE clientDll) {
 
     g_pFlashDownHudGatePatchAddr = patchAddr;
     g_bFlashDownHudGatePatched = true;
-    advancedfx::Message("[mirv_pov_flash] Patched flash down-HUD gate at %p\n", (void *)patchAddr);
     return true;
 }
 
@@ -239,16 +238,15 @@ static void MirvPovHud_ApplyFlashHudGatePatches(HMODULE clientDll) {
     if(!g_bFlashUpHudGatePatched) {
         const size_t matchAddr = getAddress(clientDll, "48 8B F2 48 8B E9 E8 ?? ?? ?? ?? 84 C0 0F 85");
         if(0 == matchAddr) {
-            advancedfx::Message("[mirv_pov_flash] flash up-HUD gate pattern not found\n");
+            advancedfx::Warning("[mirv_pov_flash] flash up-HUD gate pattern not found\n");
         } else {
             uint8_t * patchAddr = (uint8_t *)(matchAddr + 11);
             const uint8_t patchBytes[2] = { 0x30, 0xC0 };
             if(0x84 != patchAddr[0] || 0xC0 != patchAddr[1]) {
-                advancedfx::Message("[mirv_pov_flash] flash up-HUD gate landed on unexpected bytes %02X %02X\n", patchAddr[0], patchAddr[1]);
+                advancedfx::Warning("[mirv_pov_flash] flash up-HUD gate landed on unexpected bytes.\n");
             } else if(MirvPovHud_PatchTwoBytes(patchAddr, patchBytes, g_FlashUpHudGateOrigBytes, "flash up-HUD gate")) {
                 g_pFlashUpHudGatePatchAddr = patchAddr;
                 g_bFlashUpHudGatePatched = true;
-                advancedfx::Message("[mirv_pov_flash] Patched flash up-HUD gate at %p\n", (void *)patchAddr);
             }
         }
     }
@@ -261,7 +259,6 @@ static void MirvPovHud_RemoveFlashHudGatePatches() {
         if(MirvPovHud_RestoreTwoBytes(g_pFlashUpHudGatePatchAddr, g_FlashUpHudGateOrigBytes, "flash up-HUD gate")) {
             g_pFlashUpHudGatePatchAddr = nullptr;
             g_bFlashUpHudGatePatched = false;
-            advancedfx::Message("[mirv_pov_flash] Restored flash up-HUD gate\n");
         } else {
             advancedfx::Warning("[mirv_pov_flash] Failed to restore flash up-HUD gate\n");
         }
@@ -280,7 +277,6 @@ static void MirvPovHud_RemoveFlashHudGatePatches() {
             if(restored) {
                 g_pFlashDownHudGatePatchAddr = nullptr;
                 g_bFlashDownHudGatePatched = false;
-                advancedfx::Message("[mirv_pov_flash] Restored flash down-HUD gate\n");
             } else {
                 advancedfx::Warning("[mirv_pov_flash] Failed to restore flash down-HUD gate\n");
             }
@@ -294,7 +290,7 @@ void MirvPovHud_ApplyPatches(HMODULE clientDll) {
     if(g_bHudSpectatorCheckPatched && g_bIsLocalPlayerHLTVHooked && g_bIsDemoOrHltvHooked
         && g_bFlashUpHudGatePatched && g_bFlashDownHudGatePatched) return;
     if(nullptr == clientDll) {
-        advancedfx::Message("[mirv_pov_radar_patch] No client.dll handle\n");
+        advancedfx::Warning("[mirv_pov_radar_patch] No client.dll handle\n");
         return;
     }
 
@@ -305,7 +301,7 @@ void MirvPovHud_ApplyPatches(HMODULE clientDll) {
     if(false) {
         size_t funcAddr = getAddress(clientDll, "48 83 EC ?? 33 C9 E8 ?? ?? ?? ?? 48 85 C0 74 ?? 80 B8");
         if(0 == funcAddr) {
-            advancedfx::Message("[mirv_pov_radar_patch] IsLocalPlayerHLTV pattern not found\n");
+            advancedfx::Warning("[mirv_pov_radar_patch] IsLocalPlayerHLTV pattern not found\n");
         } else {
             g_Org_IsLocalPlayerHLTV = (IsLocalPlayerHLTV_t)funcAddr;
             DetourTransactionBegin();
@@ -313,9 +309,8 @@ void MirvPovHud_ApplyPatches(HMODULE clientDll) {
             DetourAttach(&(PVOID&)g_Org_IsLocalPlayerHLTV, New_IsLocalPlayerHLTV);
             if(NO_ERROR == DetourTransactionCommit()) {
                 g_bIsLocalPlayerHLTVHooked = true;
-                advancedfx::Message("[mirv_pov_radar_patch] Hooked IsLocalPlayerHLTV at %p\n", (void*)funcAddr);
             } else {
-                advancedfx::Message("[mirv_pov_radar_patch] IsLocalPlayerHLTV detour failed\n");
+                advancedfx::Warning("[mirv_pov_radar_patch] IsLocalPlayerHLTV detour failed\n");
                 g_Org_IsLocalPlayerHLTV = nullptr;
             }
         }
@@ -364,9 +359,6 @@ void MirvPovHud_ApplyPatches(HMODULE clientDll) {
                                        cand[0] == 0xB0 || (cand[0] == 0x33 && cand[1] == 0xC0) ||
                                        cand[0] == 0x8B) {
                                         funcAddr = candidate;
-                                        advancedfx::Message("[mirv_pov_radar_patch] IsDemoOrHltv: string at %p, LEA at %p, func at %p (bytes: %02X %02X %02X %02X)\n",
-                                            (void*)strAddr, (void*)(size_t)p, (void*)funcAddr,
-                                            cand[0], cand[1], cand[2], cand[3]);
                                         break;
                                     }
                                 }
@@ -377,11 +369,11 @@ void MirvPovHud_ApplyPatches(HMODULE clientDll) {
                 }
             }
         } else {
-            advancedfx::Message("[mirv_pov_radar_patch] IsDemoOrHltv: string not found in client.dll\n");
+            advancedfx::Warning("[mirv_pov_radar_patch] IsDemoOrHltv string not found in client.dll\n");
         }
 
         if(0 == funcAddr) {
-            advancedfx::Message("[mirv_pov_radar_patch] IsDemoOrHltv: function not found\n");
+            advancedfx::Warning("[mirv_pov_radar_patch] IsDemoOrHltv function not found\n");
             g_bIsDemoOrHltvHooked = true;
         } else {
             g_Org_IsDemoOrHltv = (IsDemoOrHltv_t)funcAddr;
@@ -390,9 +382,8 @@ void MirvPovHud_ApplyPatches(HMODULE clientDll) {
             DetourAttach(&(PVOID&)g_Org_IsDemoOrHltv, New_IsDemoOrHltv);
             if(NO_ERROR == DetourTransactionCommit()) {
                 g_bIsDemoOrHltvHooked = true;
-                advancedfx::Message("[mirv_pov_radar_patch] Hooked IsDemoOrHltv at %p\n", (void*)funcAddr);
             } else {
-                advancedfx::Message("[mirv_pov_radar_patch] IsDemoOrHltv detour failed\n");
+                advancedfx::Warning("[mirv_pov_radar_patch] IsDemoOrHltv detour failed\n");
                 g_Org_IsDemoOrHltv = nullptr;
                 g_bIsDemoOrHltvHooked = true;
             }
@@ -406,7 +397,7 @@ void MirvPovHud_ApplyPatches(HMODULE clientDll) {
     if(false) {
         size_t match3 = getAddress(clientDll, "80 B8 EB 03 00 00 01 48 8B 11 41 0F 94 C0");
         if(0 == match3) {
-            advancedfx::Message("[mirv_pov_radar_patch] HUD spectator check pattern not found\n");
+            advancedfx::Warning("[mirv_pov_radar_patch] HUD spectator check pattern not found\n");
         } else {
             uint8_t * patchAddr = (uint8_t *)(match3 + 6);
             g_HudSpectatorCheckOrigByte = *patchAddr;
@@ -418,9 +409,8 @@ void MirvPovHud_ApplyPatches(HMODULE clientDll) {
                 VirtualProtect(patchAddr, 1, oldProtect, &dummy);
                 g_pHudSpectatorCheckPatchAddr = patchAddr;
                 g_bHudSpectatorCheckPatched = true;
-                advancedfx::Message("[mirv_pov_radar_patch] Patched HUD spectator check at %p (0x01->0xFF)\n", (void*)patchAddr);
             } else {
-                advancedfx::Message("[mirv_pov_radar_patch] VirtualProtect failed for HUD spectator patch (error %lu)\n", GetLastError());
+                advancedfx::Warning("[mirv_pov_radar_patch] VirtualProtect failed for HUD spectator patch (error %lu)\n", GetLastError());
             }
         }
     }
@@ -442,7 +432,6 @@ void MirvPovHud_RemovePatches() {
         g_bIsLocalPlayerHLTVHooked = false;
         g_IsLocalPlayerHLTV_SuppressFrames = 0;
         g_IsLocalPlayerHLTV_LastDemoTick = -1;
-        advancedfx::Message("[mirv_pov_radar_patch] Unhooked IsLocalPlayerHLTV\n");
     }
 
     if(g_bIsDemoOrHltvHooked && g_Org_IsDemoOrHltv) {
@@ -451,7 +440,6 @@ void MirvPovHud_RemovePatches() {
         DetourDetach(&(PVOID&)g_Org_IsDemoOrHltv, New_IsDemoOrHltv);
         DetourTransactionCommit();
         g_bIsDemoOrHltvHooked = false;
-        advancedfx::Message("[mirv_pov_radar_patch] Unhooked IsDemoOrHltv\n");
     }
 
     if(g_bHudSpectatorCheckPatched && g_pHudSpectatorCheckPatchAddr) {
@@ -463,7 +451,6 @@ void MirvPovHud_RemovePatches() {
         }
         g_bHudSpectatorCheckPatched = false;
         g_pHudSpectatorCheckPatchAddr = nullptr;
-        advancedfx::Message("[mirv_pov_radar_patch] Restored HUD spectator check\n");
     }
 
 }

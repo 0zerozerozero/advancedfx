@@ -3,7 +3,6 @@
 #include "MirvPovTeamID.h"
 
 #include "ClientEntitySystem.h"
-#include "WrpConsole.h"
 
 #include "../shared/AfxConsole.h"
 #include "../shared/AfxDetours.h"
@@ -16,15 +15,6 @@
 namespace {
 
 using GetTeamIdContextPlayerFn = CEntityInstance * (__fastcall *)();
-
-bool g_TeamIdDebug = false;
-bool g_TeamIdOverrideEnabled = true;
-uint64_t g_TeamIdCalls = 0;
-uint64_t g_TeamIdOverrides = 0;
-uint64_t g_TeamIdNativeXray = 0;
-uint64_t g_TeamIdNativePovDisabled = 0;
-uint64_t g_TeamIdNoPov = 0;
-uint64_t g_TeamIdExceptions = 0;
 
 uint8_t * g_TeamIdCallSite = nullptr;
 uint8_t g_TeamIdOriginalCall[5] = {};
@@ -50,28 +40,16 @@ CEntityInstance * __fastcall GetTeamIdContextPlayer()
         ? g_GetNativeTeamIdContextPlayer()
         : nullptr;
 
-    if(g_TeamIdDebug) ++g_TeamIdCalls;
-    if(!MirvPov_IsEnabled() || !g_TeamIdOverrideEnabled) {
-        if(g_TeamIdDebug) ++g_TeamIdNativePovDisabled;
-        return nativePlayer;
-    }
+    if(!MirvPov_IsEnabled()) return nativePlayer;
 
     __try {
-        if(IsSpectatorXrayEnabled()) {
-            if(g_TeamIdDebug) ++g_TeamIdNativeXray;
-            return nativePlayer;
-        }
+        if(IsSpectatorXrayEnabled()) return nativePlayer;
 
         CEntityInstance * povPlayer = GetCurrentPovPlayerPawn();
-        if(nullptr == povPlayer || !povPlayer->IsPlayerPawn()) {
-            if(g_TeamIdDebug) ++g_TeamIdNoPov;
-            return nativePlayer;
-        }
+        if(nullptr == povPlayer || !povPlayer->IsPlayerPawn()) return nativePlayer;
 
-        if(g_TeamIdDebug) ++g_TeamIdOverrides;
         return povPlayer;
     } __except(EXCEPTION_EXECUTE_HANDLER) {
-        if(g_TeamIdDebug) ++g_TeamIdExceptions;
         return nativePlayer;
     }
 }
@@ -121,35 +99,6 @@ uint8_t * AllocNear(uint8_t * target, size_t size)
 }
 
 } // namespace
-
-void MirvPovTeamID_EnableDebug()
-{
-    g_TeamIdDebug = true;
-}
-
-void MirvPovTeamID_ResetDebug()
-{
-    g_TeamIdCalls = 0;
-    g_TeamIdOverrides = 0;
-    g_TeamIdNativeXray = 0;
-    g_TeamIdNativePovDisabled = 0;
-    g_TeamIdNoPov = 0;
-    g_TeamIdExceptions = 0;
-}
-
-void MirvPovTeamID_PrintStatus()
-{
-    advancedfx::Message(
-        "mirv_teamid applied=%i debug=%i calls=%llu overrides=%llu nativeXray=%llu nativePovDisabled=%llu noPov=%llu exceptions=%llu\n",
-        g_TeamIdPatched ? 1 : 0,
-        g_TeamIdDebug ? 1 : 0,
-        static_cast<unsigned long long>(g_TeamIdCalls),
-        static_cast<unsigned long long>(g_TeamIdOverrides),
-        static_cast<unsigned long long>(g_TeamIdNativeXray),
-        static_cast<unsigned long long>(g_TeamIdNativePovDisabled),
-        static_cast<unsigned long long>(g_TeamIdNoPov),
-        static_cast<unsigned long long>(g_TeamIdExceptions));
-}
 
 void MirvPovTeamID_ApplyPatches(HMODULE clientDll)
 {
@@ -220,7 +169,6 @@ void MirvPovTeamID_ApplyPatches(HMODULE clientDll)
     g_TeamIdCallSite = callSite;
     g_TeamIdThunk = thunk;
     g_TeamIdPatched = true;
-    advancedfx::Message("[mirv_pov_teamid] TeamID now uses the POV player as native context while X-ray is off.\n");
 }
 
 void MirvPovTeamID_RemovePatches()
@@ -245,36 +193,4 @@ void MirvPovTeamID_RemovePatches()
     g_TeamIdThunk = nullptr;
     g_GetNativeTeamIdContextPlayer = nullptr;
     g_TeamIdPatched = false;
-    advancedfx::Message("[mirv_pov_teamid] Restored the native TeamID context call.\n");
-}
-
-CON_COMMAND(mirv_teamid, "Manage TeamID POV context.")
-{
-    const int argC = args->ArgC();
-    const char * arg0 = args->ArgV(0);
-
-    if(3 <= argC && 0 == _stricmp("enabled", args->ArgV(1))) {
-        g_TeamIdOverrideEnabled = 0 != atoi(args->ArgV(2));
-        return;
-    }
-    if(3 <= argC && 0 == _stricmp("debug", args->ArgV(1))) {
-        g_TeamIdDebug = 0 != atoi(args->ArgV(2));
-        return;
-    }
-    if(2 <= argC && 0 == _stricmp("status", args->ArgV(1))) {
-        MirvPovTeamID_PrintStatus();
-        return;
-    }
-    if(2 <= argC && 0 == _stricmp("resetDebug", args->ArgV(1))) {
-        MirvPovTeamID_ResetDebug();
-        return;
-    }
-
-    advancedfx::Message(
-        "%s enabled 0|1 - Use the POV player as native TeamID context while X-ray is off.\n"
-        "%s debug 0|1 - Enable debug counters.\n"
-        "%s status - Print debug counters.\n"
-        "%s resetDebug - Reset debug counters.\n"
-        "Current value: %i\n",
-        arg0, arg0, arg0, arg0, g_TeamIdOverrideEnabled ? 1 : 0);
 }

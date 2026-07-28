@@ -268,7 +268,6 @@ bool ApplyPatch(
     state.trampoline = trampoline;
     state.size = size;
     state.applied = true;
-    advancedfx::Message("[mirv_pov_radar] Applied %s patch.\n", state.name);
     return true;
 }
 
@@ -301,7 +300,6 @@ bool RestorePatch(RadarPatchState & state)
     state.trampoline = nullptr;
     state.size = 0;
     state.applied = false;
-    advancedfx::Message("[mirv_pov_radar] Restored %s patch.\n", state.name);
     return true;
 }
 

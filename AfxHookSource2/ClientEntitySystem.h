@@ -27,7 +27,6 @@ void MirvPov_UpdateSeekDetection();
 void MirvPov_UpdateScoreboardSync();
 bool MirvPov_IsScoreboardSyncEnabled();
 void MirvPov_SetScoreboardSyncEnabled(bool enabled);
-void MirvPov_PrintScoreboardStatus();
 
 class CAfxEntityInstanceRef;
 

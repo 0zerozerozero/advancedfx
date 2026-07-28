@@ -5,7 +5,6 @@
 #include "ClientEntitySystem.h"
 #include "Globals.h"
 #include "SchemaSystem.h"
-#include "WrpConsole.h"
 
 #include "../shared/AfxConsole.h"
 #include "../shared/binutils.h"
@@ -34,24 +33,10 @@ GetLocalPawn_t g_OrgGetLocalPawn = nullptr;
 DoStartSoundEvent_t g_OrgDoStartSoundEvent = nullptr;
 QueueRadarSound_t g_QueueRadarSound = nullptr;
 void ** g_SoundEventInterfaceSlot = nullptr;
-void * g_LocalPawnAddress = nullptr;
-void * g_QueueRadarSoundAddress = nullptr;
 void * g_SoundGateReturnAddresses[3] = {};
 uint32_t g_DistanceCurveKey = 0;
 bool g_Hooked = false;
-std::atomic_bool g_Enabled = true;
 std::atomic_bool g_NativeProducerSeen = false;
-
-std::atomic_uint64_t g_LocalPawnCalls = 0;
-std::atomic_uint64_t g_GateMatches[3] = {};
-std::atomic_uint64_t g_Overrides = 0;
-std::atomic_uint64_t g_NoPov = 0;
-std::atomic_uint64_t g_SosCalls = 0;
-std::atomic_uint64_t g_SosPov = 0;
-std::atomic_uint64_t g_SosSteps = 0;
-std::atomic_uint64_t g_SosQueued = 0;
-std::atomic_uint64_t g_SosNativeSkip = 0;
-std::atomic_uint64_t g_Exceptions = 0;
 
 uint32_t FinalizeSoundFieldHash(uint32_t hash)
 {
@@ -154,8 +139,7 @@ int GetNativeSoundRadius(void * soundEventInterface, uint32_t eventId)
 CEntityInstance * __fastcall New_GetLocalPawn()
 {
     CEntityInstance * nativePawn = g_OrgGetLocalPawn();
-    ++g_LocalPawnCalls;
-    if(!g_Enabled.load() || !MirvPov_IsEnabled()) return nativePawn;
+    if(!MirvPov_IsEnabled()) return nativePawn;
 
     void * returnAddress = _ReturnAddress();
     int gate = returnAddress == g_SoundGateReturnAddresses[0]
@@ -165,25 +149,18 @@ CEntityInstance * __fastcall New_GetLocalPawn()
             : (returnAddress == g_SoundGateReturnAddresses[2] ? 2 : -1));
     if(gate < 0) return nativePawn;
 
-    ++g_GateMatches[gate];
     if(0 == gate) g_NativeProducerSeen = true;
     __try {
         CEntityInstance * povPawn = GetCurrentPovPlayerPawn();
-        if(nullptr == povPawn) {
-            ++g_NoPov;
-            return nativePawn;
-        }
-        ++g_Overrides;
+        if(nullptr == povPawn) return nativePawn;
         return povPawn;
     } __except(EXCEPTION_EXECUTE_HANDLER) {
-        ++g_Exceptions;
         return nativePawn;
     }
 }
 
 void __fastcall New_DoStartSoundEvent(void * soundOpGameSystem, void * netMessage)
 {
-    ++g_SosCalls;
     uint32_t eventHash = 0;
     CEntityInstance * sourcePawn = nullptr;
     bool isPov = false;
@@ -194,23 +171,17 @@ void __fastcall New_DoStartSoundEvent(void * soundOpGameSystem, void * netMessag
             int sourceEntityIndex = *reinterpret_cast<int *>(message + 0x60);
             sourcePawn = ResolveSoundSourcePawn(sourceEntityIndex);
             isPov = IsCurrentPovPlayer(sourcePawn);
-            if(isPov) ++g_SosPov;
         }
     } __except(EXCEPTION_EXECUTE_HANDLER) {
-        ++g_Exceptions;
     }
 
     g_OrgDoStartSoundEvent(soundOpGameSystem, netMessage);
 
-    if(!g_Enabled.load()
-        || !MirvPov_IsEnabled()
+    if(!MirvPov_IsEnabled()
         || !isPov
         || nullptr == sourcePawn
         || 0 == eventHash) return;
-    if(g_NativeProducerSeen.load()) {
-        ++g_SosNativeSkip;
-        return;
-    }
+    if(g_NativeProducerSeen.load()) return;
 
     __try {
         void * soundEventInterface = GetSoundEventInterface();
@@ -222,7 +193,6 @@ void __fastcall New_DoStartSoundEvent(void * soundOpGameSystem, void * netMessag
 
         const char * name = getName(soundEventInterface, eventHash);
         if(nullptr == name || nullptr == strstr(name, ".Step")) return;
-        ++g_SosSteps;
 
         uint32_t eventId = resolveEventId(soundEventInterface, name, true);
         if(0 == eventId) return;
@@ -230,26 +200,8 @@ void __fastcall New_DoStartSoundEvent(void * soundOpGameSystem, void * netMessag
         if(radius < 1) return;
 
         g_QueueRadarSound(sourcePawn, radius, 0.5f, true);
-        ++g_SosQueued;
     } __except(EXCEPTION_EXECUTE_HANDLER) {
-        ++g_Exceptions;
     }
-}
-
-void ResetCounters()
-{
-    g_LocalPawnCalls = 0;
-    g_GateMatches[0] = 0;
-    g_GateMatches[1] = 0;
-    g_GateMatches[2] = 0;
-    g_Overrides = 0;
-    g_NoPov = 0;
-    g_SosCalls = 0;
-    g_SosPov = 0;
-    g_SosSteps = 0;
-    g_SosQueued = 0;
-    g_SosNativeSkip = 0;
-    g_Exceptions = 0;
 }
 
 } // namespace
@@ -268,11 +220,7 @@ void MirvPovSoundCircle_Initialize(HMODULE clientDll)
         clientDll,
         "40 53 48 83 EC 20 48 8B D9 E8 ?? ?? ?? ?? 48 85 C0 0F 84 ?? ?? 00 00 48 89 6C 24 ?? 48 8D 54 24 ?? 48 89 74 24 ?? 48 8B C8");
     if(0 == playerSoundProducer || 0 == queueRadarSound || 0 == positionUpdater) {
-        advancedfx::Warning(
-            "[mirv_pov_sound_circle] Native radar sound path was not found (event=%d queue=%d position=%d).\n",
-            0 != playerSoundProducer ? 1 : 0,
-            0 != queueRadarSound ? 1 : 0,
-            0 != positionUpdater ? 1 : 0);
+        advancedfx::Warning("[mirv_pov_sound_circle] Native radar sound path was not found.\n");
         return;
     }
 
@@ -345,17 +293,13 @@ void MirvPovSoundCircle_Initialize(HMODULE clientDll)
     curveHash = hashField(distanceCurvePath + 24, curveHash);
     uint32_t distanceCurveKey = FinalizeSoundFieldHash(curveHash);
     if(0xd7da5bc8 != distanceCurveKey) {
-        advancedfx::Warning(
-            "[mirv_pov_sound_circle] Native distance-curve key validation failed (%08X).\n",
-            distanceCurveKey);
+        advancedfx::Warning("[mirv_pov_sound_circle] Native distance-curve key validation failed.\n");
         return;
     }
 
-    g_LocalPawnAddress = localPawnTargets[0];
-    g_QueueRadarSoundAddress = reinterpret_cast<void *>(queueRadarSound);
-    g_OrgGetLocalPawn = reinterpret_cast<GetLocalPawn_t>(g_LocalPawnAddress);
+    g_OrgGetLocalPawn = reinterpret_cast<GetLocalPawn_t>(localPawnTargets[0]);
     g_OrgDoStartSoundEvent = reinterpret_cast<DoStartSoundEvent_t>(doStartSoundEvent);
-    g_QueueRadarSound = reinterpret_cast<QueueRadarSound_t>(g_QueueRadarSoundAddress);
+    g_QueueRadarSound = reinterpret_cast<QueueRadarSound_t>(queueRadarSound);
     g_SoundEventInterfaceSlot = soundEventInterfaceSlot;
     g_DistanceCurveKey = distanceCurveKey;
     for(int i = 0; i < 3; ++i) g_SoundGateReturnAddresses[i] = callSites[i] + 5;
@@ -369,8 +313,6 @@ void MirvPovSoundCircle_Initialize(HMODULE clientDll)
         g_OrgDoStartSoundEvent = nullptr;
         g_QueueRadarSound = nullptr;
         g_SoundEventInterfaceSlot = nullptr;
-        g_LocalPawnAddress = nullptr;
-        g_QueueRadarSoundAddress = nullptr;
         g_DistanceCurveKey = 0;
         g_SoundGateReturnAddresses[0] = nullptr;
         g_SoundGateReturnAddresses[1] = nullptr;
@@ -380,47 +322,4 @@ void MirvPovSoundCircle_Initialize(HMODULE clientDll)
     }
 
     g_Hooked = true;
-    ResetCounters();
-    advancedfx::Message(
-        "[mirv_pov_sound_circle] Native SOS footstep circles enabled (getter=%p queue=%p handler=%p).\n",
-        g_LocalPawnAddress,
-        g_QueueRadarSoundAddress,
-        reinterpret_cast<void *>(doStartSoundEvent));
-}
-
-CON_COMMAND(mirv_pov_sound_circle, "Control native POV radar sound circles.")
-{
-    if(2 <= args->ArgC()) {
-        const char * value = args->ArgV(1);
-        if(0 == _stricmp(value, "true") || 0 == _stricmp(value, "1") || 0 == _stricmp(value, "on")) {
-            g_Enabled = true;
-        } else if(0 == _stricmp(value, "false") || 0 == _stricmp(value, "0") || 0 == _stricmp(value, "off")) {
-            g_Enabled = false;
-        } else if(0 == _stricmp(value, "reset")) {
-            ResetCounters();
-        } else {
-            advancedfx::Message("Usage: mirv_pov_sound_circle true|false|reset\n");
-            return;
-        }
-    }
-
-    advancedfx::Message(
-        "mirv_pov_sound_circle enabled=%d applied=%d getter=%p queue=%p nativeSeen=%d calls=%llu gates=%llu,%llu,%llu overrides=%llu noPov=%llu sos=%llu sosPov=%llu steps=%llu queued=%llu nativeSkip=%llu exceptions=%llu\n",
-        g_Enabled.load() ? 1 : 0,
-        g_Hooked ? 1 : 0,
-        g_LocalPawnAddress,
-        g_QueueRadarSoundAddress,
-        g_NativeProducerSeen.load() ? 1 : 0,
-        static_cast<unsigned long long>(g_LocalPawnCalls.load()),
-        static_cast<unsigned long long>(g_GateMatches[0].load()),
-        static_cast<unsigned long long>(g_GateMatches[1].load()),
-        static_cast<unsigned long long>(g_GateMatches[2].load()),
-        static_cast<unsigned long long>(g_Overrides.load()),
-        static_cast<unsigned long long>(g_NoPov.load()),
-        static_cast<unsigned long long>(g_SosCalls.load()),
-        static_cast<unsigned long long>(g_SosPov.load()),
-        static_cast<unsigned long long>(g_SosSteps.load()),
-        static_cast<unsigned long long>(g_SosQueued.load()),
-        static_cast<unsigned long long>(g_SosNativeSkip.load()),
-        static_cast<unsigned long long>(g_Exceptions.load()));
 }

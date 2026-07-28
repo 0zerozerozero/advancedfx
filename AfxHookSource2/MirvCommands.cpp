@@ -203,12 +203,9 @@ CON_COMMAND(mirv_pov, "POV HUD with radar showing teammates. Offline demo playba
 			HMODULE hClient = GetModuleHandleW(L"client.dll");
 			MirvPov_LoadVoiceScript();
 			MirvPov_ApplyCvarSettings();
-			MirvPovTeamID_EnableDebug();
-			MirvPovTeamID_ResetDebug();
 			MirvPovTeamID_ApplyPatches(hClient);
 			MirvPov_Enable(hClient);
-			MirvPovTeamID_PrintStatus();
-			advancedfx::Message("mirv_pov enabled. Use mp_forcecamera 0 for cross-team switching. TeamID debug counters are enabled and reset.\n");
+			advancedfx::Message("mirv_pov enabled. Use mp_forcecamera 0 for cross-team switching.\n");
 			return;
 		}
 		if(0 == _stricmp(arg1, "false") || 0 == _stricmp(arg1, "0") || 0 == _stricmp(arg1, "off")) {
@@ -234,10 +231,6 @@ CON_COMMAND(mirv_pov_scoreboard, "Sync demo POV scoreboard key to +showscores. D
 	int argc = args->ArgC();
 	if(2 == argc) {
 		const char * arg1 = args->ArgV(1);
-		if(0 == _stricmp(arg1, "status")) {
-			MirvPov_PrintScoreboardStatus();
-			return;
-		}
 		if(0 == _stricmp(arg1, "true") || 0 == _stricmp(arg1, "1") || 0 == _stricmp(arg1, "on")) {
 			MirvPov_SetScoreboardSyncEnabled(true);
 			advancedfx::Message("mirv_pov_scoreboard enabled.\n");
@@ -250,7 +243,7 @@ CON_COMMAND(mirv_pov_scoreboard, "Sync demo POV scoreboard key to +showscores. D
 		}
 	}
 	advancedfx::Message(
-		"Usage: mirv_pov_scoreboard true|false|status\n"
+		"Usage: mirv_pov_scoreboard true|false\n"
 		"  true  - Enable scoreboard sync from current POV target's demo ButtonScore\n"
 		"  false - Disable scoreboard sync and close +showscores\n"
 		"Current: %s\n"

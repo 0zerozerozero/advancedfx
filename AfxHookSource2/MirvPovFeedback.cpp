@@ -5,7 +5,6 @@
 #include "ClientEntitySystem.h"
 #include "Globals.h"
 #include "SchemaSystem.h"
-#include "WrpConsole.h"
 
 #include "../shared/AfxConsole.h"
 #include "../shared/binutils.h"
@@ -21,15 +20,6 @@ using HashString_t = unsigned int (__fastcall *)(const char * string, unsigned i
 
 PlayEntitySound_t g_PlayEntitySound = nullptr;
 HashString_t g_HashString = nullptr;
-uint64_t g_Events = 0;
-uint64_t g_HurtEvents = 0;
-uint64_t g_DeathEvents = 0;
-uint64_t g_PovMatches = 0;
-uint64_t g_Played = 0;
-uint64_t g_NoPov = 0;
-uint64_t g_MissingEntity = 0;
-uint64_t g_Exceptions = 0;
-const char * g_LastSound = nullptr;
 
 SOURCESDK::CS2::GameEventKeySymbol_t MakeKey(const char * name)
 {
@@ -49,16 +39,9 @@ bool IsPovAttack(
     attackerPawn = reinterpret_cast<CEntityInstance *>(event->GetPlayerPawn(MakeKey("attacker")));
     victimPawn = reinterpret_cast<CEntityInstance *>(event->GetPlayerPawn(MakeKey("userid")));
     CEntityInstance * povPawn = GetCurrentPovPlayerPawn();
-    if(nullptr == povPawn) {
-        ++g_NoPov;
-        return false;
-    }
-    if(nullptr == attackerPawn || nullptr == victimPawn) {
-        ++g_MissingEntity;
-        return false;
-    }
+    if(nullptr == povPawn) return false;
+    if(nullptr == attackerPawn || nullptr == victimPawn) return false;
     if(attackerPawn != povPawn || attackerPawn == victimPawn) return false;
-    ++g_PovMatches;
     return true;
 }
 
@@ -84,13 +67,10 @@ void Play(CEntityInstance * victimPawn, const char * soundName)
 {
     if(nullptr == g_PlayEntitySound || nullptr == victimPawn || nullptr == soundName) return;
     g_PlayEntitySound(victimPawn, nullptr, soundName);
-    g_LastSound = soundName;
-    ++g_Played;
 }
 
 void HandleHurt(SOURCESDK::CS2::IGameEvent * event)
 {
-    ++g_HurtEvents;
     CEntityInstance * attackerPawn = nullptr;
     CEntityInstance * victimPawn = nullptr;
     if(!IsPovAttack(event, attackerPawn, victimPawn)) return;
@@ -114,7 +94,6 @@ void HandleHurt(SOURCESDK::CS2::IGameEvent * event)
 
 void HandleDeath(SOURCESDK::CS2::IGameEvent * event)
 {
-    ++g_DeathEvents;
     CEntityInstance * attackerPawn = nullptr;
     CEntityInstance * victimPawn = nullptr;
     if(!IsPovAttack(event, attackerPawn, victimPawn)) return;
@@ -147,12 +126,7 @@ void MirvPovFeedback_Initialize(HMODULE clientDll)
             "48 83 EC 28 45 8B D0 4C 8B C9 48 83 FA 04 0F 82 ?? ?? ?? ?? 0F B6 09 48 89 5C 24 20 8D 41 BF 3C 19 77 03 80 C1 20"));
     }
     if(nullptr == g_PlayEntitySound || nullptr == g_HashString) {
-        advancedfx::Warning(
-            "[mirv_pov_feedback] Initialization failed (sound=%d hash=%d).\n",
-            nullptr != g_PlayEntitySound ? 1 : 0,
-            nullptr != g_HashString ? 1 : 0);
-    } else {
-        advancedfx::Message("[mirv_pov_feedback] Event feedback initialized with the native entity sound system.\n");
+        advancedfx::Warning("[mirv_pov_feedback] Native sound path was not found.\n");
     }
 }
 
@@ -164,44 +138,10 @@ void MirvPovFeedback_HandleGameEvent(SOURCESDK::CS2::IGameEvent * event)
 
     __try {
         if(0 == strcmp(name, "player_hurt")) {
-            ++g_Events;
             HandleHurt(event);
         } else if(0 == strcmp(name, "player_death")) {
-            ++g_Events;
             HandleDeath(event);
         }
     } __except(EXCEPTION_EXECUTE_HANDLER) {
-        ++g_Exceptions;
     }
-}
-
-CON_COMMAND(mirv_pov_feedback, "Inspect POV hit and kill feedback.")
-{
-    if(2 <= args->ArgC() && 0 == _stricmp(args->ArgV(1), "reset")) {
-        g_Events = 0;
-        g_HurtEvents = 0;
-        g_DeathEvents = 0;
-        g_PovMatches = 0;
-        g_Played = 0;
-        g_NoPov = 0;
-        g_MissingEntity = 0;
-        g_Exceptions = 0;
-        g_LastSound = nullptr;
-        advancedfx::Message("mirv_pov_feedback counters reset.\n");
-        return;
-    }
-
-    advancedfx::Message(
-        "mirv_pov_feedback initialized=%d events=%llu hurt=%llu death=%llu matches=%llu played=%llu noPov=%llu missingEntity=%llu exceptions=%llu\n"
-        "  lastSound=%s\n",
-        nullptr != g_PlayEntitySound && nullptr != g_HashString ? 1 : 0,
-        (unsigned long long)g_Events,
-        (unsigned long long)g_HurtEvents,
-        (unsigned long long)g_DeathEvents,
-        (unsigned long long)g_PovMatches,
-        (unsigned long long)g_Played,
-        (unsigned long long)g_NoPov,
-        (unsigned long long)g_MissingEntity,
-        (unsigned long long)g_Exceptions,
-        nullptr != g_LastSound ? g_LastSound : "none");
 }
