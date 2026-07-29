@@ -18,6 +18,7 @@
 
 static void* g_CStylePropertyOpacity_vtable = 0;
 static void* g_CStylePropertyVisible_vtable = 0;
+static void** g_PanoramaUIEngine = nullptr;
 
 typedef void(__fastcall *g_CPanelStyleSetStyleProperty_t)(void* This, void* property, bool transition);
 static g_CPanelStyleSetStyleProperty_t g_CPanelStyleSetStyleProperty = nullptr;
@@ -144,6 +145,44 @@ namespace CS2 {
 
 void MirvPanorama_SetHudPanel(void** value) {
 	CS2::PanoramaUIPanel::hudPanel = value;
+}
+
+void MirvPanorama_SetUIEngine(void** value) {
+	g_PanoramaUIEngine = value;
+}
+
+static bool Panorama_MakeSymbol(const char* name, short& value) {
+	if(!name || !g_PanoramaUIEngine || !*g_PanoramaUIEngine || !CS2::PanoramaUIEngine::makeSymbol) return false;
+
+	typedef short(__fastcall * MakeSymbol_t)(void*, int, const char*);
+	auto uiEngine = *g_PanoramaUIEngine;
+	auto vtable = *(unsigned char**)uiEngine;
+	if(!vtable) return false;
+
+	auto makeSymbol = *(MakeSymbol_t*)(vtable + CS2::PanoramaUIEngine::makeSymbol);
+	if(!makeSymbol) return false;
+
+	value = makeSymbol(uiEngine, 0, name);
+	return value != (short)-1;
+}
+
+bool Panorama_SetPanelClass(void* panel, const char* className, bool value) {
+	if(!panel || !className) return false;
+
+	short classSymbol = -1;
+	if(!Panorama_MakeSymbol(className, classSymbol)) return false;
+
+	typedef void (__fastcall * SetPanelClass_t)(void*, short);
+	typedef bool (__fastcall * HasPanelClass_t)(void*, short);
+	auto vtable = *(void***)panel;
+	if(!vtable) return false;
+
+	auto setPanelClass = (SetPanelClass_t)vtable[value ? 144 : 147];
+	auto hasPanelClass = (HasPanelClass_t)vtable[157];
+	if(!setPanelClass || !hasPanelClass) return false;
+
+	setPanelClass(panel, classSymbol);
+	return hasPanelClass(panel, classSymbol) == value;
 }
 
 bool Panorama_SetPanelOpacity(void* panel, float value) {

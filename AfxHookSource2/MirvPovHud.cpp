@@ -2,6 +2,7 @@
 
 #include "MirvPovHud.h"
 
+#include "ClientEntitySystem.h"
 #include "Globals.h"
 #include "MirvPanorama.h"
 
@@ -14,7 +15,7 @@
 #include <stdint.h>
 #include <string.h>
 
-static unsigned char* MirvPovHud_FindPanelById(unsigned char* parentPanel, const char* panelId) {
+static unsigned char* MirvPovHud_FindPanelByIdRecursive(unsigned char* parentPanel, const char* panelId) {
     if(!parentPanel) return nullptr;
 
     const auto currentPanelId = *(char**)(parentPanel + CS2::PanoramaUIPanel::panelId);
@@ -23,10 +24,28 @@ static unsigned char* MirvPovHud_FindPanelById(unsigned char* parentPanel, const
     const auto children = parentPanel + CS2::PanoramaUIPanel::children;
     const auto childCount = *(int*)children;
     for(int i = 0; i < childCount; ++i) {
-        if(auto panel = MirvPovHud_FindPanelById(((unsigned char***)children)[1][i], panelId)) return panel;
+        if(auto panel = MirvPovHud_FindPanelByIdRecursive(((unsigned char***)children)[1][i], panelId)) return panel;
     }
 
     return nullptr;
+}
+
+static unsigned char* MirvPovHud_FindPanelById(unsigned char* parentPanel, const char* panelId) {
+    if(!parentPanel || !panelId) return nullptr;
+
+    const auto currentPanelId = *(char**)(parentPanel + CS2::PanoramaUIPanel::panelId);
+    if(currentPanelId && 0 == strcmp(currentPanelId, panelId)) return parentPanel;
+
+    __try {
+        typedef unsigned char* (__fastcall * FindChildTraverse_t)(unsigned char*, const char*);
+        auto vtable = *(void***)parentPanel;
+        auto findChildTraverse = vtable ? (FindChildTraverse_t)vtable[47] : nullptr;
+        if(findChildTraverse) {
+            if(auto panel = findChildTraverse(parentPanel, panelId)) return panel;
+        }
+    } __except(EXCEPTION_EXECUTE_HANDLER) {}
+
+    return MirvPovHud_FindPanelByIdRecursive(parentPanel, panelId);
 }
 
 static bool MirvPovHud_PanelContainsId(unsigned char* parentPanel, const char* panelId) {
@@ -84,16 +103,52 @@ static void MirvPovHud_HideSpecPlayerPanel() {
     if(specPlayerAvatar) Panorama_SetPanelVisible(specPlayerAvatar, false);
 }
 
+static unsigned char* g_SpectatorHotKeyLabelContainerPanel = nullptr;
+
+static void MirvPovHud_SetSpectatorHotKeyLabelsVisible(bool visible) {
+    if(!CS2::PanoramaUIPanel::hudPanel) return;
+
+    __try {
+        if(!g_SpectatorHotKeyLabelContainerPanel) {
+            auto hudPanel = ((unsigned char***)CS2::PanoramaUIPanel::hudPanel)[0][1];
+            if(!hudPanel) return;
+
+            g_SpectatorHotKeyLabelContainerPanel = MirvPovHud_FindPanelById(
+                hudPanel,
+                "HotKeyLabelContainer");
+        }
+
+        // Reuse the native DemoUI state that hudlegend.css already handles:
+        // .DemoControllerFull .HudSpecplayer__key-hints-text { visibility: collapse; }
+        if(g_SpectatorHotKeyLabelContainerPanel) {
+            if(!Panorama_SetPanelClass(
+                g_SpectatorHotKeyLabelContainerPanel,
+                "DemoControllerFull",
+                !visible)) {
+                g_SpectatorHotKeyLabelContainerPanel = nullptr;
+            }
+        }
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        g_SpectatorHotKeyLabelContainerPanel = nullptr;
+    }
+}
+
 void MirvPovHud_OnPanoramaLayoutFileLoaded(const char* filePath) {
-    if(0 != strcmp("panorama\\layout\\hud\\hudhealthammocenter.xml", filePath)) return;
-    MirvPovHud_HideSpecPlayerPanel();
-    MirvPovHud_ShowHealthAmmoCenterStrokes();
+    if(0 == strcmp("panorama\\layout\\hud\\hudhealthammocenter.xml", filePath)) {
+        MirvPovHud_HideSpecPlayerPanel();
+        MirvPovHud_ShowHealthAmmoCenterStrokes();
+    } else if(0 == strcmp("panorama\\layout\\hud\\hudlegend.xml", filePath)) {
+        g_SpectatorHotKeyLabelContainerPanel = nullptr;
+        MirvPovHud_SetSpectatorHotKeyLabelsVisible(!MirvPov_IsEnabled());
+    }
 }
 
 static int g_IsLocalPlayerHLTV_SuppressFrames = 0;
 static int g_IsLocalPlayerHLTV_LastDemoTick = -1;
 
 void MirvPovHud_UpdateSeekDetection(int curTick) {
+    MirvPovHud_SetSpectatorHotKeyLabelsVisible(false);
+
     if(g_IsLocalPlayerHLTV_LastDemoTick >= 0) {
         int delta = curTick - g_IsLocalPlayerHLTV_LastDemoTick;
         if(delta < 0) delta = -delta;
@@ -417,12 +472,15 @@ void MirvPovHud_ApplyPatches(HMODULE clientDll) {
 
     MirvPovHud_HideSpecPlayerPanel();
     MirvPovHud_ShowHealthAmmoCenterStrokes();
+    MirvPovHud_SetSpectatorHotKeyLabelsVisible(false);
 
     return;
 }
 
 void MirvPovHud_RemovePatches() {
     MirvPovHud_RemoveFlashHudGatePatches();
+    MirvPovHud_SetSpectatorHotKeyLabelsVisible(true);
+    g_SpectatorHotKeyLabelContainerPanel = nullptr;
 
     if(g_bIsLocalPlayerHLTVHooked && g_Org_IsLocalPlayerHLTV) {
         DetourTransactionBegin();

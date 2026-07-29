@@ -1084,7 +1084,8 @@ int __fastcall My_Panorama_CLayoutFile_LoadFromFile(void * This, const char * pF
 		return result;
 	}
 
-	if(0 == strcmp("panorama\\layout\\hud\\hudhealthammocenter.xml",pFilePath)) {
+	if(0 == strcmp("panorama\\layout\\hud\\hudhealthammocenter.xml",pFilePath)
+		|| 0 == strcmp("panorama\\layout\\hud\\hudlegend.xml",pFilePath)) {
 		int result = g_Org_Panorama_CLayoutFile_LoadFromFile(This,pFilePath,_unk02);
 		MirvPovHud_OnPanoramaLayoutFileLoaded(pFilePath);
 		return result;
@@ -1278,6 +1279,7 @@ LAB_1809a7de1
 	uint32_t g_CUIEngine_offset;
 	std::memcpy(&g_CUIEngine_offset, (void*)(g_CUIEngine_addr), sizeof(g_CUIEngine_offset));
 	g_myPanoramaWrapper.pUIEngine = (u_char**)(g_CUIEngine_addr + g_CUIEngine_offset + 4);
+	MirvPanorama_SetUIEngine((void**)g_myPanoramaWrapper.pUIEngine);
 
 	return true;
 };
