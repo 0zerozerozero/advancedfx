@@ -18,7 +18,9 @@
 #include "Globals.h"
 #include "ClientEntitySystem.h"
 #include "SchemaSystem.h"
-#include "MirvColors.h" 
+#include "MirvColors.h"
+#include "MirvPanorama.h"
+#include "MirvPovHud.h"
 
 #include "addresses.h"
 
@@ -26,16 +28,12 @@
 #include <algorithm>
 #include <vector>
 
+
 // TODO: move panorama stuff out after addresses.cpp is done
 // decompose/change myPanoramaWrapper too
 // doing it messy way here for now because lazy
 
 // credit https://github.com/danielkrupinski/Osiris
-
-void* g_CStylePropertyOpacity_vtable = 0;
-
-typedef void(__fastcall *g_CPanelStyleSetStyleProperty_t)(void* This, void* property, bool transition);
-g_CPanelStyleSetStyleProperty_t g_CPanelStyleSetStyleProperty = nullptr;
 
 struct CPanel2D {
 	const char* getClassName() {
@@ -50,95 +48,7 @@ struct CPanel2D {
 	}
 };
 
-struct StylePropertySymbolMap {
-    typedef uint8_t* (__fastcall *Resolve_t)(uint8_t* out, const char* stylePropertyName);
-
-    uint8_t findSymbol(const char* stylePropertyName) {
-        if (resolve) {
-            uint8_t result = 0xFF;
-            resolve(&result, stylePropertyName);
-            return result;
-        }
-
-        if (!symbols) return 0xFF;
-
-		for (int i = 0; i < symbols->numElements; ++i) {
-            if (std::strcmp(symbols->memory[i].key.Get(), stylePropertyName) == 0)
-                return symbols->memory[i].value;
-        }
-
-        return 0xFF;
-    }
-
-    Resolve_t resolve = nullptr;
-    SOURCESDK::CS2::CUtlMap<SOURCESDK::CS2::CUtlString, uint8_t>* symbols = nullptr;
-} g_PanoramaStylePropertySymbols;
-
-CON_COMMAND(__mirv_panorama_dump_style_symbols, "") {
-	auto symbols = g_PanoramaStylePropertySymbols.symbols;
-	if (!symbols) {
-		advancedfx::Warning("AFXWARNING: Panorama style-symbol dumping is unavailable for this CS2 build.\n");
-		return;
-	}
-
-	for (int i = 0; i < symbols->numElements; ++i) {
-		auto node = symbols->memory[i];
-		advancedfx::Message("%i: %s\n", node.value, node.key.Get());
-	}
-}
-
-struct StylePropertyOpacity {
-	void* vtable;
-	uint8_t id;
-	bool disallowTransition = false;
-	u_char pad[0x6];
-	float value;
-
-	StylePropertyOpacity() {} 
-
-	StylePropertyOpacity(void* vt, uint8_t i, float v) 
-		: vtable(vt), id(i), value(v) {}
-
-};
-
-bool makeOpacityProperty(StylePropertyOpacity* out, float value) {
-	auto id = g_PanoramaStylePropertySymbols.findSymbol("opacity");
-	if (g_CStylePropertyOpacity_vtable == nullptr || id == 0xFF) return false;
-
-	*out = StylePropertyOpacity { g_CStylePropertyOpacity_vtable, id, value};
-
-	return true;
-}
-
-struct CUIPanel {
-	bool setOpacity(float value) {
-		auto style = (u_char*)(this + CS2::PanoramaUIPanel::panelStyle);
-
-		StylePropertyOpacity styleProp;
-		if (!makeOpacityProperty(&styleProp, value)) return false;
-
-		g_CPanelStyleSetStyleProperty(style, &styleProp, true);
-
-		return true;
-	}
-};
-
 currentGameCamera g_CurrentGameCamera;
-
-namespace CS2 {
-	namespace PanoramaUIPanel {
-		ptrdiff_t getAttributeString = 0;
-		ptrdiff_t setAttributeString = 0;
-	}
-
-	namespace PanoramaPanelStyle {
-		ptrdiff_t setPanelStyleProperty = 0;
-	}
-
-	namespace PanoramaUIEngine {
-		ptrdiff_t makeSymbol = 0;
-	}
-};
 
 struct PlayerInfo {
 	char* name;
@@ -856,7 +766,7 @@ private:
 };
 
 struct CS2_MirvDeathMsgGlobals : MirvDeathMsgGlobals {
-	bool hooked = false; 
+	bool hooked = false;
 	MyDeathMsgGameEventWrapper* activeWrapper = nullptr;
 } g_MirvDeathMsgGlobals;
 
@@ -1174,6 +1084,13 @@ int __fastcall My_Panorama_CLayoutFile_LoadFromFile(void * This, const char * pF
 		return result;
 	}
 
+	if(0 == strcmp("panorama\\layout\\hud\\hudhealthammocenter.xml",pFilePath)
+		|| 0 == strcmp("panorama\\layout\\hud\\hudlegend.xml",pFilePath)) {
+		int result = g_Org_Panorama_CLayoutFile_LoadFromFile(This,pFilePath,_unk02);
+		MirvPovHud_OnPanoramaLayoutFileLoaded(pFilePath);
+		return result;
+	}
+
 	return g_Org_Panorama_CLayoutFile_LoadFromFile(This,pFilePath,_unk02);
 }
 
@@ -1357,10 +1274,12 @@ LAB_1809a7de1
 	uint32_t g_HudPanel_offset;
 	std::memcpy(&g_HudPanel_offset, (void*)(g_HudPanel_addr), sizeof(g_HudPanel_offset));
 	g_myPanoramaWrapper.pHudPanel = (u_char**)(g_HudPanel_addr + g_HudPanel_offset + 4);
+	MirvPanorama_SetHudPanel((void**)g_myPanoramaWrapper.pHudPanel);
 
 	uint32_t g_CUIEngine_offset;
 	std::memcpy(&g_CUIEngine_offset, (void*)(g_CUIEngine_addr), sizeof(g_CUIEngine_offset));
 	g_myPanoramaWrapper.pUIEngine = (u_char**)(g_CUIEngine_addr + g_CUIEngine_offset + 4);
+	MirvPanorama_SetUIEngine((void**)g_myPanoramaWrapper.pUIEngine);
 
 	return true;
 };
@@ -1411,66 +1330,7 @@ bool getPanoramaAddrs(HMODULE panoramaDll) {
 		g_Org_Panorama_CStylePropertyWashColor_Parse = (Panorama_CStyleProperty_Parse_t)vtable[6];
 	}		
 
-	{
-		g_CStylePropertyOpacity_vtable = (void**)Afx::BinUtils::FindClassVtable(panoramaDll,".?AVCStylePropertyOpacity@panorama@@",0,0);
-		if(nullptr == g_CStylePropertyOpacity_vtable) {
-			ErrorBox(MkErrStr(__FILE__, __LINE__));	
-			return false;
-		}
-	}		
-
-	{
-		// Resolve style properties through Panorama's own lookup function. This
-		// avoids depending on the private map layout for normal operation while
-		// retaining the map below for diagnostics and as a fallback.
-		//
-		// fn refernces string "panorama::CStyleSymbol::CStyleSymbol" 4 times
-		auto addr = getAddress(panoramaDll, "40 55 56 57 41 54 48 8D 6C 24 ?? 48 81 EC ?? ?? ?? ?? 44 8B 05 ?? ?? ?? ?? 48 8B F9 65 48 8B 04 25 58 00 00 00 45 33 E4 C6 01 FF 48 8B F2");
-		if (addr) {
-			g_PanoramaStylePropertySymbols.resolve = (StylePropertySymbolMap::Resolve_t)addr;
-		}
-	}
-
-	{
-		// (in function of g_PanoramaStylePropertySymbols.resolve)
-		// before it jumps to error branch for "Need to increase size of static g_StylePropertyRegistrations (MAX_PANORAMA_STYLE_SYMBOLS) before registering more styles, failed on %s"
-		/*
-      		lVar9 = DAT_180510350;
-			if ((uVar12 & 0x7fffffff) == 0) {
-				lVar9 = lVar13;
-			}
-			puVar1 = (undefined4 *)((longlong)iVar5 * 0x20 + 0x10 + lVar9);
-			*puVar1 = (undefined4)local_68;
-			puVar1[1] = local_68._4_4_;
-			puVar1[2] = (undefined4)uStack_60;
-			puVar1[3] = uStack_60._4_4_;
-			local_70 = local_80;
-			FUN_180099640(&DAT_180510348,iVar5,local_78); <-- DAT_180510348 is what we are after, since might sometimes be the result of a function called before this one, but right now it's inlined.
-			_DAT_18051035c = _DAT_18051035c + 1;
-	  	*/
-		auto addr = getAddress(panoramaDll, "0f 10 45 f7 48 8d 0d ?? ?? ?? ?? 41 f7 c0 ff ff ff 7f");
-		if (0 == addr) {
-			if (!g_PanoramaStylePropertySymbols.resolve) {
-				ErrorBox(MkErrStr(__FILE__, __LINE__));
-				return false;
-			}
-			advancedfx::Warning("AFXWARNING: Panorama style-symbol map is unavailable; style lookup will use the resolver.\n");
-		}
-		else {
-			auto out = addr + 11 + *(int32_t*)(addr + 7);
-			g_PanoramaStylePropertySymbols.symbols = (SOURCESDK::CS2::CUtlMap<SOURCESDK::CS2::CUtlString, uint8_t>*)(out);
-		}
-	}
-
-	{
-		// Can be found in constructor for any CStyleProperty
-		// e.g. see 44th fn in vtable for CPanelStyle
-		auto addr = getAddress(panoramaDll, "E8 ?? ?? ?? ?? 48 8D 05 ?? ?? ?? ?? 48 89 45 ?? EB");
-		if (addr) {
-			g_CPanelStyleSetStyleProperty = (g_CPanelStyleSetStyleProperty_t)(addr + 5 + *(int32_t*)(addr + 1));
-		} else 
-			ErrorBox(MkErrStr(__FILE__, __LINE__));	
-	}
+	if(!MirvPanorama_InitStyleProperties(panoramaDll)) return false;
 
 	return true;
 };
@@ -1502,7 +1362,7 @@ void HookPanorama(HMODULE panoramaDll)
 void HookDeathMsg(HMODULE clientDll) {
 	if (g_MirvDeathMsgGlobals.hooked) return;
 
-    getDeathMsgAddrs(clientDll);
+	getDeathMsgAddrs(clientDll);
 	if (!getPanoramaAddrsFromClient(clientDll)) return;
 
 	DetourTransactionBegin();
@@ -1919,7 +1779,7 @@ void applyStyleProperty_Console(IWrpCommandArgs * args) {
 			return;
 		}
 
-		auto res = ((CUIPanel*)targetPanel)->setOpacity(std::clamp(opacity, 0.0f, 1.0f));
+		auto res = Panorama_SetPanelOpacity(targetPanel, std::clamp(opacity, 0.0f, 1.0f));
 		if (!res) {
 			advancedfx::Warning("Could not set opacity property for %s\n", panelId.c_str());
 		}
@@ -1929,7 +1789,7 @@ void applyStyleProperty_Console(IWrpCommandArgs * args) {
 			advancedfx::Warning("Could not find panels with className %s\n", panelId.c_str());
 		} else {
 			for (auto panel : foundPanels) {
-				((CUIPanel*)panel)->setOpacity(std::clamp(opacity, 0.0f, 1.0f));
+				Panorama_SetPanelOpacity(panel, std::clamp(opacity, 0.0f, 1.0f));
 			}
 		}
 	}
