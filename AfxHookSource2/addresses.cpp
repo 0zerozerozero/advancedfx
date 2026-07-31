@@ -173,4 +173,5 @@ void Addresses_InitClientDll(AfxAddr clientDll) {
 		else
 			ErrorBox(MkErrStr(__FILE__, __LINE__));
 	}
+
 }

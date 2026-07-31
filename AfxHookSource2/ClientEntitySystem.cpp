@@ -4,11 +4,13 @@
 #include "DeathMsg.h"
 #include "WrpConsole.h"
 #include "Globals.h"
+#include "MirvPovCore.h"
 
 #include "../deps/release/prop/AfxHookSource/SourceSdkShared.h"
 
 #include "../shared/AfxConsole.h"
-//#include "../shared/binutils.h"
+#include "../shared/binutils.h"
+#include "../shared/AfxDetours.h"
 #include "../shared/FFITools.h"
 #include "../shared/StringTools.h"
 
@@ -20,10 +22,18 @@
 
 #include <map>
 #include <algorithm>
+#include <limits.h>
+#include <stdint.h>
+
 
 void ** g_pEntityList = nullptr;
 GetHighestEntityIndex_t  g_GetHighestEntityIndex = nullptr;
 GetEntityFromIndex_t g_GetEntityFromIndex = nullptr;
+
+typedef CEntityInstance * (__fastcall * ClientDll_GetSplitScreenPlayer_t)(int slot);
+static ClientDll_GetSplitScreenPlayer_t g_ClientDll_GetSplitScreenPlayer = nullptr;
+extern ClientDll_GetSplitScreenPlayer_t g_Org_ClientDll_GetSplitScreenPlayer;
+
 
 /*
 cl_track_render_eye_angles 1
@@ -43,8 +53,8 @@ const char * CEntityInstance::GetName() {
             *puVar4 = "GetName";
             ...
             puVar4[8] = FUN_18094f290; // <-  VSCRIPT entity.GetName function.
-            ...            
-        }        
+            ...
+        }
     */
 	const char * pszName = (const char*)*(unsigned char**)(*(unsigned char**)((unsigned char*)this + 0x10) + 0x18);
 	if(pszName) return pszName;
@@ -63,9 +73,9 @@ const char * CEntityInstance::GetDebugName() {
             *puVar4 = "GetDebugName";
             ...
            puVar4[8] = &LAB_1814c1b90; // <-  VSCRIPT entity.GetDebugName function.
-            ...            
-        }        
-    */    
+            ...
+        }
+    */
 	const char * pszName = (const char*)*(unsigned char**)(*(unsigned char**)((unsigned char*)this + 0x10) + 0x18);
 	if(pszName) return pszName;
 	return **(const char***)(*(unsigned char**)(*(unsigned char**)((unsigned char*)this + 0x10) + 0x8)+0x58);
@@ -80,9 +90,9 @@ const char * CEntityInstance::GetClassName() {
             *puVar4 = "GetClassname";
             ...
             puVar4[8] = &LAB_1814c1b60; // <-  VSCRIPT entity.GetClassName function.
-            ...            
-        }        
-    */     
+            ...
+        }
+    */
 	const char * pszName = (const char*)*(unsigned char**)(*(unsigned char**)((unsigned char*)this + 0x10) + 0x20);
 	if(pszName) return pszName;
 	return "";
@@ -119,7 +129,7 @@ SOURCESDK::CS2::CBaseHandle CEntityInstance::GetPlayerPawnHandle() {
 
 bool CEntityInstance::IsPlayerController() {
 	// See cl_ent_text drawing function. Near "Pawn: (%d) Name: %s".
-	return ((bool (__fastcall *)(void *)) (*(void***)this)[156]) (this);    
+	return ((bool (__fastcall *)(void *)) (*(void***)this)[156]) (this);
 }
 
 SOURCESDK::CS2::CBaseHandle CEntityInstance::GetPlayerControllerHandle() {
@@ -194,14 +204,14 @@ uint8_t CEntityInstance::GetObserverMode() {
 	if (!IsPlayerPawn()) return 0;
     void * pObserverServices = *(void**)((unsigned char*)this + g_clientDllOffsets.C_BasePlayerPawn.m_pObserverServices);
     if(nullptr == pObserverServices) return 0;
-	return *(uint8_t*)((unsigned char*)pObserverServices + g_clientDllOffsets.CPlayer_ObserverServices.m_iObserverMode);    
+	return *(uint8_t*)((unsigned char*)pObserverServices + g_clientDllOffsets.CPlayer_ObserverServices.m_iObserverMode);
 }
 
 SOURCESDK::CS2::CBaseHandle CEntityInstance::GetObserverTarget() {
 	if (!IsPlayerPawn())  return SOURCESDK::CS2::CEntityHandle::CEntityHandle();
     void * pObserverServices = *(void**)((unsigned char*)this + g_clientDllOffsets.C_BasePlayerPawn.m_pObserverServices);
     if(nullptr == pObserverServices) return SOURCESDK::CS2::CEntityHandle::CEntityHandle();
-	return SOURCESDK::CS2::CEntityHandle::CEntityHandle(*(unsigned int*)((unsigned char*)pObserverServices + g_clientDllOffsets.CPlayer_ObserverServices.m_hObserverTarget));    
+	return SOURCESDK::CS2::CEntityHandle::CEntityHandle(*(unsigned int*)((unsigned char*)pObserverServices + g_clientDllOffsets.CPlayer_ObserverServices.m_hObserverTarget));
 }
 
 SOURCESDK::CS2::CBaseHandle CEntityInstance::GetHandle() {
@@ -248,7 +258,7 @@ public:
     static CAfxEntityInstanceRef * Aquire(CEntityInstance * pInstance) {
         CAfxEntityInstanceRef * pRef;
         auto it = m_Map.find(pInstance);
-        if(it != m_Map.end()) {    
+        if(it != m_Map.end()) {
             pRef = it->second;
         } else {
             pRef = new CAfxEntityInstanceRef(pInstance);
@@ -265,7 +275,7 @@ public:
             auto & pInstance = it->second;
             pInstance->m_pInstance = nullptr;
             m_Map.erase(it);
-        }        
+        }
     }
 
     CEntityInstance * GetInstance() {
@@ -376,14 +386,14 @@ bool Hook_ClientEntitySystem2() {
         firstResult = NO_ERROR == DetourTransactionCommit();
     }
 
-    return firstResult;    
+    return firstResult;
 }
 
 void Hook_ClientEntitySystem3(HMODULE clientDll) {
 	// these two called one after each other
 	// there is only one placed where they are called together
 	//
-	//                             LAB_1802066cd                                   XREF[1]:     18020660b (j)   
+	//                             LAB_1802066cd                                   XREF[1]:     18020660b (j)
     // 1802066cd 8b  4f  6c       MOV        ECX ,dword ptr [RDI  + 0x6c ]
     // 1802066d0 83  e9  01       SUB        ECX ,0x1
     // 1802066d3 0f  84  3d       JZ         LAB_180206816
@@ -427,6 +437,103 @@ int GetHighestEntityIndex() {
     //return g_pEntityList && g_GetHighestEntityIndex ? g_GetHighestEntityIndex(*g_pEntityList, false) : -1;
 }
 
+static uint8_t * GetTeamFieldPtr(CEntityInstance * entity) {
+    if(nullptr == entity) return nullptr;
+    return (uint8_t *)((unsigned char *)entity + g_clientDllOffsets.C_BaseEntity.m_iTeamNum);
+}
+
+static unsigned int * GetControllerPawnHandleFieldPtr(CEntityInstance * controller) {
+    if(nullptr == controller || !controller->IsPlayerController()) return nullptr;
+    return (unsigned int *)((unsigned char *)controller + g_clientDllOffsets.CBasePlayerController.m_hPawn);
+}
+
+static void * GetObserverServicesPtrUnchecked(CEntityInstance * pawn) {
+    if(nullptr == pawn || 0 == g_clientDllOffsets.C_BasePlayerPawn.m_pObserverServices) return nullptr;
+    return *(void **)((unsigned char *)pawn + g_clientDllOffsets.C_BasePlayerPawn.m_pObserverServices);
+}
+
+static void * GetCameraServicesPtr(CEntityInstance * pawn) {
+    if(nullptr == pawn || !pawn->IsPlayerPawn()) return nullptr;
+    return *(void **)((unsigned char *)pawn + g_clientDllOffsets.C_BasePlayerPawn.m_pCameraServices);
+}
+
+static CEntityInstance * GetPawnFromController(CEntityInstance * controller) {
+    if(nullptr == controller || !controller->IsPlayerController()) return nullptr;
+    auto pawnHandle = controller->GetPlayerPawnHandle();
+    if(!pawnHandle.IsValid()) return nullptr;
+    CEntityInstance * pawn = GetEntityFromIndex(pawnHandle.GetEntryIndex());
+    return nullptr != pawn && pawn->IsPlayerPawn() ? pawn : nullptr;
+}
+
+static uint8_t * GetObserverModeFieldPtrUnchecked(CEntityInstance * pawn) {
+    if(0 == g_clientDllOffsets.CPlayer_ObserverServices.m_iObserverMode) return nullptr;
+    void * pObserverServices = GetObserverServicesPtrUnchecked(pawn);
+    return nullptr != pObserverServices
+        ? (uint8_t *)((unsigned char *)pObserverServices + g_clientDllOffsets.CPlayer_ObserverServices.m_iObserverMode)
+        : nullptr;
+}
+
+static unsigned int * GetObserverTargetFieldPtrUnchecked(CEntityInstance * pawn) {
+    if(0 == g_clientDllOffsets.CPlayer_ObserverServices.m_hObserverTarget) return nullptr;
+    void * pObserverServices = GetObserverServicesPtrUnchecked(pawn);
+    return nullptr != pObserverServices
+        ? (unsigned int *)((unsigned char *)pObserverServices + g_clientDllOffsets.CPlayer_ObserverServices.m_hObserverTarget)
+        : nullptr;
+}
+
+CEntityInstance * GetObservedPlayerPawn() {
+    if(0 == g_clientDllOffsets.C_BasePlayerPawn.m_pObserverServices
+        || 0 == g_clientDllOffsets.CPlayer_ObserverServices.m_iObserverMode
+        || 0 == g_clientDllOffsets.CPlayer_ObserverServices.m_hObserverTarget) return nullptr;
+
+    CEntityInstance * realPawn = GetPawnFromController(GetRealSplitScreenPlayer(0));
+    if(nullptr == realPawn) return nullptr;
+
+    uint8_t * observerMode = GetObserverModeFieldPtrUnchecked(realPawn);
+    if(nullptr == observerMode || 0 == *observerMode) return nullptr;
+
+    unsigned int * observerTarget = GetObserverTargetFieldPtrUnchecked(realPawn);
+    if(nullptr == observerTarget) return nullptr;
+
+    SOURCESDK::CS2::CBaseHandle targetHandle(*observerTarget);
+    if(!targetHandle.IsValid()) return nullptr;
+
+    CEntityInstance * targetPawn = GetEntityFromIndex(targetHandle.GetEntryIndex());
+    return nullptr != targetPawn && targetPawn->IsPlayerPawn() ? targetPawn : nullptr;
+}
+
+CEntityInstance * GetObservedPlayerController() {
+    CEntityInstance * targetPawn = GetObservedPlayerPawn();
+    if(nullptr == targetPawn) return nullptr;
+
+    auto controllerHandle = targetPawn->GetPlayerControllerHandle();
+    if(!controllerHandle.IsValid()) return nullptr;
+
+    CEntityInstance * targetController = GetEntityFromIndex(controllerHandle.GetEntryIndex());
+    return nullptr != targetController && targetController->IsPlayerController() ? targetController : nullptr;
+}
+
+static unsigned int * GetViewEntityFieldPtr(CEntityInstance * pawn) {
+    if(void * pCameraServices = GetCameraServicesPtr(pawn)) {
+        return (unsigned int *)((unsigned char *)pCameraServices + g_clientDllOffsets.CPlayer_CameraServices.m_hViewEntity);
+    }
+    return nullptr;
+}
+
+CEntityInstance * GetEntityFromIndex(int index) {
+    if(index < 0 || nullptr == g_pEntityList || nullptr == *g_pEntityList || nullptr == g_GetEntityFromIndex) return nullptr;
+    return (CEntityInstance *)g_GetEntityFromIndex(*g_pEntityList, index);
+}
+
+CEntityInstance * GetRealSplitScreenPlayer(int slot) {
+    if(nullptr != g_Org_ClientDll_GetSplitScreenPlayer) {
+        return g_Org_ClientDll_GetSplitScreenPlayer(slot);
+    }
+
+    if(nullptr == g_ClientDll_GetSplitScreenPlayer) return nullptr;
+    return g_ClientDll_GetSplitScreenPlayer(slot);
+}
+
 struct MirvEntityEntry {
 	int entryIndex;
 	int handle;
@@ -455,7 +562,7 @@ CON_COMMAND(mirv_listentities, "List entities.")
 			"\t\"sort=distance\" - Sort entities by distance relative to current position, from closest to most distant.\n"
 			"\t\"limit=<i>\" - Limit number of printed entries.\n"
 			"Example:\n"
-			"%s sort=distance limit=10\n" 
+			"%s sort=distance limit=10\n"
 			, arg0, arg0, arg0
 		);
 		return;
@@ -464,7 +571,7 @@ CON_COMMAND(mirv_listentities, "List entities.")
 			const char * argI = args->ArgV(i);
 			if (StringIBeginsWith(argI, "limit=")) {
 				printCount = atoi(argI + strlen("limit="));
-			} 
+			}
 			else if (StringIBeginsWith(argI, "sort=")) {
 				if (0 == _stricmp(argI + strlen("sort="), "distance")) sortByDistance = true;
 			}
@@ -480,7 +587,7 @@ CON_COMMAND(mirv_listentities, "List entities.")
     for(int i = 0; i < highestIndex + 1; i++) {
         if(auto ent = (CEntityInstance*)g_GetEntityFromIndex(*g_pEntityList,i)) {
 			if (filterPlayers && !ent->IsPlayerController() && !ent->IsPlayerPawn()) continue;
-			
+
             float render_origin[3];
             float render_angles[3];
             ent->GetRenderEyeOrigin(render_origin);
@@ -492,10 +599,10 @@ CON_COMMAND(mirv_listentities, "List entities.")
 
 			entries.emplace_back(
 				MirvEntityEntry {
-					i, ent->GetHandle().ToInt(), 
+					i, ent->GetHandle().ToInt(),
 					debugName ? debugName : "", className ? className : "", clientClassName ? clientClassName : "",
 					SOURCESDK::Vector {render_origin[0], render_origin[1], render_origin[2]},
-					SOURCESDK::QAngle {render_angles[0], render_angles[1], render_angles[2]} 
+					SOURCESDK::QAngle {render_angles[0], render_angles[1], render_angles[2]}
 				}
 			);
 
@@ -519,7 +626,7 @@ CON_COMMAND(mirv_listentities, "List entities.")
 		advancedfx::Message("%i / %i / %s / %s / %s / [ %f , %f , %f , %f , %f , %f ]\n"
 			, e.entryIndex, e.handle
 			, e.debugName.c_str(), e.className.c_str(), e.clientClassName.c_str()
-			, e.origin.x, e.origin.y, e.origin.z 
+			, e.origin.x, e.origin.y, e.origin.z
 			, e.angles.x, e.angles.y, e.angles.z
 		);
 	}
@@ -588,42 +695,42 @@ extern "C" int afx_hook_source2_get_entity_ref_player_pawn_handle(void * pRef) {
     if(auto pInstance = ((CAfxEntityInstanceRef *)pRef)->GetInstance()) {
         return pInstance->GetPlayerPawnHandle().ToInt();
     }
-    return SOURCESDK_CS2_INVALID_EHANDLE_INDEX;    
+    return SOURCESDK_CS2_INVALID_EHANDLE_INDEX;
 }
 
 extern "C" FFIBool afx_hook_source2_get_entity_ref_is_player_controller(void * pRef) {
     if(auto pInstance = ((CAfxEntityInstanceRef *)pRef)->GetInstance()) {
         return BOOL_TO_FFIBOOL(pInstance->IsPlayerController());
     }
-    return FFIBOOL_FALSE;    
+    return FFIBOOL_FALSE;
 }
 
 extern "C" int afx_hook_source2_get_entity_ref_player_controller_handle(void * pRef) {
     if(auto pInstance = ((CAfxEntityInstanceRef *)pRef)->GetInstance()) {
         return pInstance->GetPlayerControllerHandle().ToInt();
     }
-    return SOURCESDK_CS2_INVALID_EHANDLE_INDEX;  
+    return SOURCESDK_CS2_INVALID_EHANDLE_INDEX;
 }
 
 extern "C" int afx_hook_source2_get_entity_ref_health(void * pRef) {
     if(auto pInstance = ((CAfxEntityInstanceRef *)pRef)->GetInstance()) {
         return pInstance->GetHealth();
     }
-    return 0;    
+    return 0;
 }
 
 extern "C" int afx_hook_source2_get_entity_ref_team(void * pRef) {
     if(auto pInstance = ((CAfxEntityInstanceRef *)pRef)->GetInstance()) {
         return pInstance->GetTeam();
     }
-    return 0;    
+    return 0;
 }
 
 
 extern "C" void afx_hook_source2_get_entity_ref_origin(void * pRef, float & x, float & y, float & z) {
     if(auto pInstance = ((CAfxEntityInstanceRef *)pRef)->GetInstance()) {
        pInstance->GetOrigin(x,y,z);
-    }    
+    }
 }
 
 extern "C" void afx_hook_source2_get_entity_ref_render_eye_origin(void * pRef, float & x, float & y, float & z) {
@@ -633,7 +740,7 @@ extern "C" void afx_hook_source2_get_entity_ref_render_eye_origin(void * pRef, f
        x = tmp[0];
        y = tmp[1];
        z = tmp[2];
-    }    
+    }
 }
 
 extern "C" void afx_hook_source2_get_entity_ref_render_eye_angles(void * pRef, float & x, float & y, float & z) {
@@ -643,7 +750,7 @@ extern "C" void afx_hook_source2_get_entity_ref_render_eye_angles(void * pRef, f
        x = tmp[0];
        y = tmp[1];
        z = tmp[2];
-    }    
+    }
 }
 
 extern "C" int afx_hook_source2_get_entity_ref_view_entity_handle(void * pRef) {
@@ -681,17 +788,26 @@ extern "C" const char* afx_hook_source2_get_entity_ref_sanitized_player_name(voi
     return nullptr;
 }
 
-typedef CEntityInstance *  (__fastcall * ClientDll_GetSplitScreenPlayer_t)(int slot);
-ClientDll_GetSplitScreenPlayer_t g_ClientDll_GetSplitScreenPlayer = nullptr;
+ClientDll_GetSplitScreenPlayer_t g_Org_ClientDll_GetSplitScreenPlayer = nullptr;
 
 bool Hook_GetSplitScreenPlayer( void* pAddr) {
-    g_ClientDll_GetSplitScreenPlayer = (ClientDll_GetSplitScreenPlayer_t)pAddr;
-    return true;
+    g_Org_ClientDll_GetSplitScreenPlayer = (ClientDll_GetSplitScreenPlayer_t)pAddr;
+    g_ClientDll_GetSplitScreenPlayer = g_Org_ClientDll_GetSplitScreenPlayer;
+    return nullptr != pAddr;
 }
 
 extern "C" void * afx_hook_source2_get_entity_ref_from_split_screen_player(int index) {
-    if(0 == index && g_ClientDll_GetSplitScreenPlayer) {
-        if(CEntityInstance * result = g_ClientDll_GetSplitScreenPlayer(index)) {
+    if(0 == index) {
+        if(CEntityInstance * result = GetRealSplitScreenPlayer(index)) {
+            return CAfxEntityInstanceRef::Aquire(result);
+        }
+    }
+    return nullptr;
+}
+
+extern "C" void * afx_hook_source2_get_entity_ref_from_effective_split_screen_player(int index) {
+    if(0 == index) {
+        if(CEntityInstance * result = GetEffectiveSplitScreenPlayer(index)) {
             return CAfxEntityInstanceRef::Aquire(result);
         }
     }
@@ -716,7 +832,7 @@ extern "C" FFIBool afx_hook_source2_get_entity_ref_attachment(void * pRef, const
     if(auto pInstance = ((CAfxEntityInstanceRef *)pRef)->GetInstance()) {
 		auto idx = pInstance->LookupAttachment(attachmentName);
 		if (0 == idx) return FFIBOOL_FALSE;
-		
+
 		SOURCESDK::Vector origin;
 		SOURCESDK::Quaternion angles;
 

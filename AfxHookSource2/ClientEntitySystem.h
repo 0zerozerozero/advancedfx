@@ -13,6 +13,11 @@ void Hook_ClientEntitySystem3(HMODULE clientDll);
 
 bool Hook_GetSplitScreenPlayer( void* pAddr);
 
+class CEntityInstance * GetEntityFromIndex(int index);
+class CEntityInstance * GetRealSplitScreenPlayer(int slot);
+class CEntityInstance * GetObservedPlayerPawn();
+class CEntityInstance * GetObservedPlayerController();
+
 class CAfxEntityInstanceRef;
 
 class CEntityInstance {
@@ -36,7 +41,7 @@ public:
     unsigned int GetHealth();
 
     int GetTeam();
-	
+
     /**
      * @remarks FLOAT_MAX if invalid
      */
