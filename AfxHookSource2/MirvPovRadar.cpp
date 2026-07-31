@@ -47,6 +47,8 @@ using RadarRelation_t = char (__fastcall *)(CEntityInstance *, int);
 using RadarPackageUpdate_t = __int64 (__fastcall *)(uint8_t *);
 using RadarCompetitiveColorIndex_t = int (__fastcall *)(CEntityInstance *);
 using RadarCompetitiveColor_t = uint32_t * (__fastcall *)(uint32_t *, int);
+using RadarHudElement_t = uint8_t * (__fastcall *)(const char *);
+using RadarPlayerSlot_t = int (__fastcall *)(void *, uint32_t);
 
 bool g_RadarBackendApplied = false;
 
@@ -54,6 +56,8 @@ RadarRelation_t g_OrgRadarRelation = nullptr;
 RadarPackageUpdate_t g_OrgRadarPackageUpdate = nullptr;
 RadarCompetitiveColorIndex_t g_RadarCompetitiveColorIndex = nullptr;
 RadarCompetitiveColor_t g_RadarCompetitiveColor = nullptr;
+RadarHudElement_t g_RadarHudElement = nullptr;
+RadarPlayerSlot_t g_RadarPlayerSlot = nullptr;
 void * g_RadarRelationReturnAddress = nullptr;
 bool g_RadarRelationHooked = false;
 bool g_RadarPackageHooked = false;
@@ -64,12 +68,15 @@ struct RadarNativeTargets {
     uint8_t * packageUpdate = nullptr;
     uint8_t * competitiveColorIndex = nullptr;
     uint8_t * competitiveColor = nullptr;
+    uint8_t * hudElement = nullptr;
+    uint8_t * playerSlot = nullptr;
 };
 
 constexpr size_t kRadarPackagePanelOffset = 0x238;
 constexpr size_t kRadarPackageFlagsOffset = 0x17760;
 constexpr size_t kRadarPackageCarrierHandleOffset = 0x17768;
 constexpr uint32_t kRadarEnemyColor = 0xFF0000FF;
+constexpr uint32_t kRadarUncarriedPackageColor = 0xFFFFFFFF;
 
 constexpr uint8_t kPushRegisters[] = {
     0x50, 0x51, 0x52, 0x53, 0x55, 0x56, 0x57,
@@ -190,6 +197,17 @@ bool SetRadarPanelColor(void * holder, const uint32_t & color)
     return true;
 }
 
+bool GetNativeRadarPlayerSlot(uint32_t handle, int & slot)
+{
+    if(nullptr == g_RadarHudElement || nullptr == g_RadarPlayerSlot) return false;
+
+    uint8_t * hudElement = g_RadarHudElement("CCSGO_HudTeamCounter");
+    if(nullptr == hudElement) return false;
+
+    slot = g_RadarPlayerSlot(hudElement - 0x20, handle);
+    return true;
+}
+
 void ApplyPovRadarPackageColor(uint8_t * root)
 {
     if(nullptr == root) return;
@@ -199,10 +217,22 @@ void ApplyPovRadarPackageColor(uint8_t * root)
         if(!GetPovRadarTeam(povTeam)) return;
 
         uint8_t flags = *(root + kRadarPackageFlagsOffset);
-        if(0 != (flags & 0x30)) return;
+        if(0 != (flags & 0x20)) return;
 
         uint32_t carrierHandle = *reinterpret_cast<uint32_t *>(
             root + kRadarPackageCarrierHandleOffset);
+
+        int carrierSlot = -1;
+        if(!GetNativeRadarPlayerSlot(carrierHandle, carrierSlot)) return;
+
+        if(2 == povTeam && (0 != (flags & 0x10) || carrierSlot < 0)) {
+            void * holder = *reinterpret_cast<void **>(root + kRadarPackagePanelOffset);
+            SetRadarPanelColor(holder, kRadarUncarriedPackageColor);
+            return;
+        }
+
+        if(carrierSlot < 0) return;
+
         CEntityInstance * carrier = ResolveRadarPlayerController(
             ResolveRadarEntity(carrierHandle));
         if(nullptr == carrier) return;
@@ -671,6 +701,34 @@ bool ResolveRadarNativeTargets(HMODULE clientDll, RadarNativeTargets & targets)
         "radar bomb-package update",
         targets.packageUpdate)) return false;
 
+    size_t packageSearchEnd = reinterpret_cast<size_t>(targets.packageUpdate) + 0x800;
+    if(textRange.End < packageSearchEnd) packageSearchEnd = textRange.End;
+    Afx::BinUtils::MemRange packageRange(
+        reinterpret_cast<size_t>(targets.packageUpdate),
+        packageSearchEnd);
+
+    uint8_t * hudElementSequence = nullptr;
+    if(!FindUniquePattern(
+        packageRange,
+        "48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 44 0F 28 9C 24 ?? ?? ?? ?? 48 85 C0",
+        "radar HUD element lookup",
+        hudElementSequence)) return false;
+    if(!ResolveCallTarget(hudElementSequence + 7, textRange, targets.hudElement)) {
+        advancedfx::Warning("[mirv_pov_radar] Radar HUD element lookup call is invalid.\n");
+        return false;
+    }
+
+    uint8_t * playerSlotSequence = nullptr;
+    if(!FindUniquePattern(
+        packageRange,
+        "8B 93 ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 8B CE C7 45 ?? FF 9B 25 FF",
+        "radar player-slot resolver",
+        playerSlotSequence)) return false;
+    if(!ResolveCallTarget(playerSlotSequence + 6, textRange, targets.playerSlot)) {
+        advancedfx::Warning("[mirv_pov_radar] Radar player-slot resolver call is invalid.\n");
+        return false;
+    }
+
     if(!FindUniquePattern(
         textRange,
         "40 53 48 83 EC ?? 48 8B D9 48 8B 0D ?? ?? ?? ?? 48 85 C9 74 ?? E8 ?? ?? ?? ?? 84 C0 74 ?? 8B 83",
@@ -733,6 +791,8 @@ void ClearRadarNativeState()
     g_OrgRadarPackageUpdate = nullptr;
     g_RadarCompetitiveColorIndex = nullptr;
     g_RadarCompetitiveColor = nullptr;
+    g_RadarHudElement = nullptr;
+    g_RadarPlayerSlot = nullptr;
     g_RadarRelationReturnAddress = nullptr;
 }
 
@@ -744,6 +804,8 @@ bool AttachRadarDetours(const RadarNativeTargets & targets)
         targets.competitiveColorIndex);
     g_RadarCompetitiveColor = reinterpret_cast<RadarCompetitiveColor_t>(
         targets.competitiveColor);
+    g_RadarHudElement = reinterpret_cast<RadarHudElement_t>(targets.hudElement);
+    g_RadarPlayerSlot = reinterpret_cast<RadarPlayerSlot_t>(targets.playerSlot);
     g_RadarRelationReturnAddress = targets.relationReturn;
 
     DetourTransactionBegin();
