@@ -21,6 +21,10 @@
 #include "MirvColors.h"
 #include "MirvFix.h"
 #include "MirvTime.h"
+#include "MirvPovCore.h"
+#include "MirvPovScoreboard.h"
+#include "MirvPovVoice.h"
+#include "MirvPovVoiceBan.h"
 
 #include "../deps/release/prop/AfxHookSource/SourceSdkShared.h"
 #include "../deps/release/prop/AfxHookSource/SourceInterfaces.h"
@@ -908,7 +912,7 @@ CON_COMMAND(__mirv_o,"") {
 typedef void (__fastcall * CViewRender_UnkMakeMatrix_t)(void* This);
 CViewRender_UnkMakeMatrix_t g_Old_CViewRender_UnkMakeMatrix = nullptr;
 void __fastcall New_CViewRender_UnkMakeMatrix(void* This) {
-	
+
 	g_Old_CViewRender_UnkMakeMatrix(This);
 	//memcpy(g_WorldToScreenMatrix.m,(unsigned char*)This + 0x1b8,sizeof(g_WorldToScreenMatrix.m));
 
@@ -1193,6 +1197,7 @@ void HookClientDll(HMODULE clientDll) {
 			Hook_GetSplitScreenPlayer((void*)range_get_split_screen_player.Start);
 		} else ErrorBox(MkErrStr(__FILE__, __LINE__));
 	}
+
 }
 
 SOURCESDK::CreateInterfaceFn g_AppSystemFactory = nullptr;
@@ -1446,7 +1451,7 @@ typedef void (* CS2_Client_FrameStageNotify_t)(void* This, SOURCESDK::CS2::Clien
 CS2_Client_FrameStageNotify_t old_CS2_Client_FrameStageNotify;
 
 void  new_CS2_Client_FrameStageNotify(void* This, SOURCESDK::CS2::ClientFrameStage_t curStage) {
-	
+
 	AfxHookSource2Rs_Engine_RunJobQueue();
 
 	/*
@@ -1499,14 +1504,25 @@ void  new_CS2_Client_FrameStageNotify(void* This, SOURCESDK::CS2::ClientFrameSta
 	}	
 
 	switch(curStage) {
-	case SOURCESDK::CS2::FRAME_RENDER_PASS:
-		g_CommandSystem.OnExecuteCommands();
-		break;
+		case SOURCESDK::CS2::FRAME_RENDER_PASS:
+			g_CommandSystem.OnExecuteCommands();
+			MirvPovVoice_OnRenderPass();
+			MirvPovVoiceBan_OnRenderPass();
+			break;
 	}
 
 	AfxHookSource2Rs_Engine_OnClientFrameStageNotify(curStage, true);
 
+		if(curStage == SOURCESDK::CS2::FRAME_RENDER_PASS) {
+			MirvPov_UpdateSeekDetection();
+			MirvPovScoreboard_Update();
+		}
+
 	old_CS2_Client_FrameStageNotify(This, curStage);
+
+	if(curStage == SOURCESDK::CS2::FRAME_RENDER_PASS) {
+		MirvPovVoice_AfterRenderPass();
+	}
 
 	AfxHookSource2Rs_Engine_OnClientFrameStageNotify(curStage, false);
 

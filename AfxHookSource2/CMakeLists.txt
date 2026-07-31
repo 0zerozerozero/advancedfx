@@ -217,6 +217,39 @@ target_sources(${PROJECT_NAME} PRIVATE
     ClientEntitySystem.cpp
     ClientEntitySystem.h
 
+    MirvPovCore.cpp
+    MirvPovCore.h
+
+    MirvPovHud.cpp
+    MirvPovHud.h
+
+    MirvPanorama.cpp
+    MirvPanorama.h
+
+    MirvPovRadar.cpp
+    MirvPovRadar.h
+
+    MirvPovFeedback.cpp
+    MirvPovFeedback.h
+
+    MirvPovSoundCircle.cpp
+    MirvPovSoundCircle.h
+
+    MirvPovTeamHealth.cpp
+    MirvPovTeamHealth.h
+
+    MirvPovVoice.cpp
+    MirvPovVoice.h
+
+    MirvPovVoiceBan.cpp
+    MirvPovVoiceBan.h
+
+    MirvPovScoreboard.cpp
+    MirvPovScoreboard.h
+
+    MirvPovTeamID.cpp
+    MirvPovTeamID.h
+
     ConsoleRs.cpp
     CVarRs.cpp
 

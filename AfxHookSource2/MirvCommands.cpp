@@ -1,14 +1,118 @@
 #include "MirvCommands.h"
 #include "ClientEntitySystem.h"
+#include "MirvPovCore.h"
+#include "MirvPovRadar.h"
+#include "MirvPovScoreboard.h"
+#include "MirvPovTeamID.h"
 
 #include "../shared/StringTools.h"
 
 #include "SceneSystem.h"
 #include "SchemaSystem.h"
+#include "AfxHookSource2Rs.h"
+#include "hlaeFolder.h"
+
+#include "../deps/release/prop/cs2/sdk_src/public/cdll_int.h"
+#include "../deps/release/prop/cs2/sdk_src/public/icvar.h"
+
+#include <string>
+#include <cstring>
+#include <filesystem>
 
 #include <algorithm>
 
 bool g_bHookedMirvCommands = false;
+
+extern SOURCESDK::CS2::ISource2EngineToClient * g_pEngineToClient;
+
+struct MirvPovCvarSetting {
+	const char * name;
+	int value;
+	SOURCESDK::CS2::ConVarHandle handle;
+	alignas(SOURCESDK::CS2::CVValue_t) unsigned char previousValue[sizeof(SOURCESDK::CS2::CVValue_t)];
+	bool previousValueSaved = false;
+};
+
+static MirvPovCvarSetting g_MirvPovCvarSettings[] = {
+	{ "cl_drawhud_force_radar", 1 },
+	{ "cl_radar_square_when_spectating", 0 },
+	{ "cl_radar_square_always", 0 },
+	{ "cl_radar_show_all_players_when_spectating", 0 },
+	{ "cl_trueview_show_status", 0 },
+	{ "r_show_build_info", 0 }
+};
+
+static void MirvPov_CopyCvarValue(SOURCESDK::CS2::CVValue_t & dst, const SOURCESDK::CS2::CVValue_t & src)
+{
+	std::memcpy(&dst, &src, sizeof(dst));
+}
+
+static void MirvPov_CopyCvarValue(unsigned char * dst, const SOURCESDK::CS2::CVValue_t & src)
+{
+	std::memcpy(dst, &src, sizeof(src));
+}
+
+static SOURCESDK::CS2::CVValue_t * MirvPov_AsCvarValue(unsigned char * value)
+{
+	return reinterpret_cast<SOURCESDK::CS2::CVValue_t *>(value);
+}
+
+static void MirvPov_SetCvar(MirvPovCvarSetting & setting, int value, bool savePreviousValue)
+{
+	if(!SOURCESDK::CS2::g_pCVar) return;
+
+	if(!setting.handle.IsValid()) setting.handle = SOURCESDK::CS2::g_pCVar->FindConVar(setting.name, false);
+	if(!setting.handle.IsValid()) return;
+
+	SOURCESDK::CS2::Cvar_s * cvar = SOURCESDK::CS2::g_pCVar->GetCvar(setting.handle.Get());
+	if(!cvar) return;
+
+	SOURCESDK::CS2::CVValue_t newValue = {};
+	SOURCESDK::CS2::CVValue_t oldValue = {};
+	MirvPov_CopyCvarValue(newValue, cvar->m_Value);
+	MirvPov_CopyCvarValue(oldValue, cvar->m_Value);
+	newValue.m_i32Value = value;
+
+	if(savePreviousValue && !setting.previousValueSaved) {
+		MirvPov_CopyCvarValue(setting.previousValue, oldValue);
+		setting.previousValueSaved = true;
+	}
+
+	if(oldValue.m_i32Value == value) return;
+
+	MirvPov_CopyCvarValue(cvar->m_Value, newValue);
+	SOURCESDK::CS2::g_pCVar->CallChangeCallback(setting.handle, 0, &newValue, &oldValue);
+}
+
+static void MirvPov_ApplyCvarSettings()
+{
+	for(MirvPovCvarSetting & setting : g_MirvPovCvarSettings) {
+		MirvPov_SetCvar(setting, setting.value, true);
+	}
+}
+
+static void MirvPov_RestoreCvarSettings()
+{
+	if(!SOURCESDK::CS2::g_pCVar) return;
+
+	for(MirvPovCvarSetting & setting : g_MirvPovCvarSettings) {
+		if(!setting.previousValueSaved) continue;
+
+		if(!setting.handle.IsValid()) setting.handle = SOURCESDK::CS2::g_pCVar->FindConVar(setting.name, false);
+		if(setting.handle.IsValid()) {
+			SOURCESDK::CS2::Cvar_s * cvar = SOURCESDK::CS2::g_pCVar->GetCvar(setting.handle.Get());
+			if(cvar) {
+				SOURCESDK::CS2::CVValue_t oldValue = {};
+				SOURCESDK::CS2::CVValue_t * previousValue = MirvPov_AsCvarValue(setting.previousValue);
+				MirvPov_CopyCvarValue(oldValue, cvar->m_Value);
+				MirvPov_CopyCvarValue(cvar->m_Value, *previousValue);
+				SOURCESDK::CS2::g_pCVar->CallChangeCallback(setting.handle, 0, previousValue, &oldValue);
+			}
+		}
+
+		setting.previousValueSaved = false;
+	}
+}
 
 float g_fNoFlashAmount = 0.0f;
 
@@ -49,7 +153,7 @@ CON_COMMAND(mirv_endofmatch, "Disables end of match scene.")
 typedef void (__fastcall *g_Original_OnFlashMaxAlphaChanged_t)(u_char* param_1, u_char* param_2, float* param_3);
 g_Original_OnFlashMaxAlphaChanged_t g_Original_OnFlashMaxAlphaChanged = nullptr;
 
-void __fastcall new_OnFlashMaxAlphaChanged(u_char* param_1, u_char* param_2, float* param_3) {	
+void __fastcall new_OnFlashMaxAlphaChanged(u_char* param_1, u_char* param_2, float* param_3) {
 	if (g_fNoFlashAmount == 0.0f) return g_Original_OnFlashMaxAlphaChanged(param_1, param_2, param_3);
 
 	auto newMaxAlpha = *param_3 * (1.0f - g_fNoFlashAmount);
@@ -74,7 +178,7 @@ void mirvNoFlash_Console(advancedfx::ICommandArgs* args) {
 		"0.25 = reduce flash by 25%% percent.\n"
 		"1 = remove flash completely.\n"
 		"Current value: %f\n"
-		, arg0, g_fNoFlashAmount 
+		, arg0, g_fNoFlashAmount
 	);
 
 }
@@ -82,6 +186,69 @@ void mirvNoFlash_Console(advancedfx::ICommandArgs* args) {
 CON_COMMAND(mirv_noflash, "Disables flash overlay.")
 {
 	mirvNoFlash_Console(args);
+}
+
+static void MirvPov_LoadVoiceScript()
+{
+	std::filesystem::path path(GetHlaeFolder());
+	path /= "resources\\AfxHookSource2\\snippets\\mirv_script_voice.js";
+	AfxHookSourceRs_Engine_Load(path.string().c_str());
+}
+
+CON_COMMAND(mirv_pov, "POV HUD with radar showing teammates. Offline demo playback only.")
+{
+	int argc = args->ArgC();
+	if(2 == argc) {
+		const char * arg1 = args->ArgV(1);
+		if(0 == _stricmp(arg1, "true") || 0 == _stricmp(arg1, "1") || 0 == _stricmp(arg1, "on")) {
+			HMODULE hClient = GetModuleHandleW(L"client.dll");
+			MirvPov_LoadVoiceScript();
+			MirvPov_ApplyCvarSettings();
+			MirvPovTeamID_ApplyPatches(hClient);
+			MirvPov_Enable(hClient);
+			advancedfx::Message("mirv_pov enabled. Use mp_forcecamera 0 for cross-team switching.\n");
+			return;
+		}
+		if(0 == _stricmp(arg1, "false") || 0 == _stricmp(arg1, "0") || 0 == _stricmp(arg1, "off")) {
+			MirvPov_Disable();
+			MirvPov_RestoreCvarSettings();
+			advancedfx::Message("mirv_pov disabled.\n");
+			return;
+		}
+	}
+	advancedfx::Message(
+		"Usage: mirv_pov true|false\n"
+			"  true  - Enable POV HUD, teammate competitive radar colors, smoke-visible teammates, red enemies\n"
+			"  false - Disable and restore original behavior\n"
+			"Current: %s\n"
+			"Note: Use mirv_pov_scoreboard 1 to enable demo scoreboard sync. Use mp_forcecamera 0 for cross-team switching. Offline demo only. Restores POV cvars on disable.\n"
+			, MirvPov_IsEnabled() ? "enabled" : "disabled"
+		);
+}
+
+CON_COMMAND(mirv_pov_scoreboard, "Sync demo POV scoreboard key to +showscores. Disabled by default.")
+{
+	int argc = args->ArgC();
+	if(2 == argc) {
+		const char * arg1 = args->ArgV(1);
+		if(0 == _stricmp(arg1, "true") || 0 == _stricmp(arg1, "1") || 0 == _stricmp(arg1, "on")) {
+				MirvPovScoreboard_SetEnabled(true);
+			advancedfx::Message("mirv_pov_scoreboard enabled.\n");
+			return;
+		}
+		if(0 == _stricmp(arg1, "false") || 0 == _stricmp(arg1, "0") || 0 == _stricmp(arg1, "off")) {
+				MirvPovScoreboard_SetEnabled(false);
+			advancedfx::Message("mirv_pov_scoreboard disabled.\n");
+			return;
+		}
+	}
+	advancedfx::Message(
+		"Usage: mirv_pov_scoreboard true|false\n"
+		"  true  - Enable scoreboard sync from current POV target's demo ButtonScore\n"
+		"  false - Disable scoreboard sync and close +showscores\n"
+		"Current: %s\n"
+			, MirvPovScoreboard_IsEnabled() ? "enabled" : "disabled"
+	);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -98,8 +265,8 @@ bool MirvFovOverride(float &fov) {
 		if(!g_bMirvFovHandleZoom || g_fMirvFovMinUnzoomedFov <= fov) {
 			fov = g_fMirvFovValue;
 			return true;
-		}
-	}
+				}
+			}
 	return false;
 }
 
@@ -269,14 +436,14 @@ void new_setGlowProps (u_char* glowProperty, int param_2, float param_3) {
 
 		if (0 != resolvedPlayerPawn) {
 			auto controllerHandle = resolvedPlayerPawn->GetPlayerControllerHandle();
-			if (controllerHandle.IsValid()) {
-				if(auto controller = (CEntityInstance*)g_GetEntityFromIndex(*g_pEntityList,controllerHandle.GetEntryIndex())) {
-					auto steamId = controller->GetSteamId();
+				if (controllerHandle.IsValid()) {
+					if(auto controller = (CEntityInstance*)g_GetEntityFromIndex(*g_pEntityList,controllerHandle.GetEntryIndex())) {
+						auto steamId = controller->GetSteamId();
 
-					if (g_MirvGlow.players.find(steamId) != g_MirvGlow.players.end()) shouldGlow = g_MirvGlow.players[steamId];
+						if (g_MirvGlow.players.find(steamId) != g_MirvGlow.players.end()) shouldGlow = g_MirvGlow.players[steamId];
+					}
 				}
 			}
-		}
 
 		if (!shouldGlow) return g_Original_setGlowProps(glowProperty, 0, param_3);
 	}
@@ -378,7 +545,7 @@ CON_COMMAND(mirv_glow, "Manage glow drawing.")
                 }
                 else if (!_stricmp("remove", arg2) && 4 <= argC) {
                     const char * arg3 = args->ArgV(3);
-                    if(StringIBeginsWith(arg3,"x")) arg3++;                    
+                    if(StringIBeginsWith(arg3,"x")) arg3++;
                     g_MirvGlow.players.erase(strtoull(arg3,nullptr,10));
                     return;
                 }
@@ -387,7 +554,7 @@ CON_COMMAND(mirv_glow, "Manage glow drawing.")
                         advancedfx::Message("x%llu: %i\n",it->first,it->second ? 1 : 0);
                     }
                     return;
-                }                
+                }
                 else if (!_stricmp("help", arg2)) {
                     deathMsgPlayers_PrintHelp_Console();
 					return;
@@ -422,7 +589,7 @@ CON_COMMAND(mirv_glow, "Manage glow drawing.")
                         advancedfx::Message("%i: %i\n",it->first,it->second ? 1 : 0);
                     }
                     return;
-                }                
+                }
             }
 			advancedfx::Message(
 				"%s %s set <iHandle> 0|1 - Enable (1) / disable (0) glow for given entity.\n"
@@ -488,7 +655,7 @@ bool getAddressesFromClient(HMODULE clientDll) {
 
 	if (auto addr = getAddress(clientDll, "E8 ?? ?? ?? ?? 45 33 F6 84 C0 0F 84")) {
 		org_shouldGlow = (org_shouldGlow_t)(addr + 5 + *(int32_t*)(addr + 1));
-	} else ErrorBox(MkErrStr(__FILE__, __LINE__)); 
+	} else ErrorBox(MkErrStr(__FILE__, __LINE__));
 
    // Has offset to material of skybox (other members too), pCSceneSystem and it's function to update skybox.
    //
@@ -511,11 +678,17 @@ bool getAddressesFromClient(HMODULE clientDll) {
 	if (auto addr = getAddress(clientDll, "33 DB 48 8D 05 ?? ?? ?? ?? 48 8B CF 48 89 44 24 ??")) {
 		auto offset = *(int32_t*)(addr + 5);
 		org_ForceUpdateSkybox = (ForceUpdateSkybox_t)(addr + 2 + 7 + offset);
-	} else ErrorBox(MkErrStr(__FILE__, __LINE__));
+	} else {
+		advancedfx::Warning("Warning: force update skybox pattern not found. Disabling MirvCommands hooks for this client.dll.\n");
+		res = false;
+	}
 
 	if (auto addr = getAddress(clientDll, "48 8D B3 ?? ?? ?? ?? 48 8B 0E")) {
 		g_Skybox_UnkPtr_Offset =  *(uint32_t*)(addr + 3);
-	} else ErrorBox(MkErrStr(__FILE__, __LINE__));
+	} else {
+		advancedfx::Warning("Warning: skybox pointer offset pattern not found. Disabling MirvCommands hooks for this client.dll.\n");
+		res = false;
+	}
 
 	return res;
 }
