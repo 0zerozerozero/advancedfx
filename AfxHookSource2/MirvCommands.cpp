@@ -4,6 +4,7 @@
 #include "MirvPovRadar.h"
 #include "MirvPovScoreboard.h"
 #include "MirvPovTeamID.h"
+#include "MirvPovVoice.h"
 
 #include "../shared/StringTools.h"
 
@@ -248,6 +249,31 @@ CON_COMMAND(mirv_pov_scoreboard, "Sync demo POV scoreboard key to +showscores. D
 		"  false - Disable scoreboard sync and close +showscores\n"
 		"Current: %s\n"
 			, MirvPovScoreboard_IsEnabled() ? "enabled" : "disabled"
+	);
+}
+
+CON_COMMAND(mirv_pov_voice, "Enable POV team voice routing and voice HUD synchronization. Enabled by default.")
+{
+	int argc = args->ArgC();
+	if(2 == argc) {
+		const char * arg1 = args->ArgV(1);
+		if(0 == _stricmp(arg1, "true") || 0 == _stricmp(arg1, "1") || 0 == _stricmp(arg1, "on")) {
+			MirvPovVoice_SetEnabled(true);
+			advancedfx::Message("mirv_pov_voice enabled.\n");
+			return;
+		}
+		if(0 == _stricmp(arg1, "false") || 0 == _stricmp(arg1, "0") || 0 == _stricmp(arg1, "off")) {
+			MirvPovVoice_SetEnabled(false);
+			advancedfx::Message("mirv_pov_voice disabled.\n");
+			return;
+		}
+	}
+	advancedfx::Message(
+		"Usage: mirv_pov_voice true|false\n"
+		"  true  - Route voice to the current POV team and synchronize the voice HUD\n"
+		"  false - Restore the original voice masks and disable synthetic speaking\n"
+		"Current: %s\n"
+			, MirvPovVoice_IsEnabled() ? "enabled" : "disabled"
 	);
 }
 

@@ -189,13 +189,13 @@ void MirvPov_Enable(HMODULE clientDll)
     MirvPovHud_ApplyPatches(clientDll);
     MirvPovTeamHealth_Initialize(clientDll);
     MirvPov_ApplyRadarPatches(clientDll);
-    MirvPov_HookVoiceHud(clientDll);
+    if(MirvPovVoice_IsEnabled()) MirvPov_HookVoiceHud(clientDll);
     MirvPovScoreboard_Initialize(clientDll);
     MirvPov_ResetVoiceHud();
 
     g_MirvPovEnabled = true;
     MirvPovFeedback_Initialize(clientDll);
-    MirvPov_UpdateVoiceTeam();
+    if(MirvPovVoice_IsEnabled()) MirvPov_UpdateVoiceTeam();
 }
 
 void MirvPov_Disable()

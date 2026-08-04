@@ -31,6 +31,7 @@ static constexpr int kMirvPovVoiceSeekThresholdTicks = 16;
 static constexpr int kMirvPovVoiceSeekClearRenderPasses = 3;
 static constexpr float kMirvPovSyntheticSpeakingSeconds = 0.65f;
 
+static bool g_MirvPovVoiceEnabled = true;
 static int g_MirvPovVoiceLastDemoTick = INT_MIN;
 static int g_MirvPovVoiceClearRenderPasses = 0;
 static bool g_MirvPovVoiceHadDemoFile = false;
@@ -160,6 +161,8 @@ static bool MirvPov_IsVoicePlayerSlotOnWatchedTeam(unsigned int playerSlot) {
 }
 
 void MirvPov_UpdateVoiceTeam() {
+    if(!g_MirvPovVoiceEnabled || !MirvPov_IsEnabled()) return;
+
     CEntityInstance * watchedController = GetCurrentPovPlayerController();
     if(nullptr == watchedController || !watchedController->IsPlayerController()) return;
 
@@ -191,7 +194,8 @@ static void MirvPov_UpdateSyntheticSpeakingExpiry() {
 static bool New_MirvPov_IsPlayingDemo(void * This) {
     void * ret = _ReturnAddress();
     bool result = g_Org_MirvPov_IsPlayingDemo(This);
-    if(MirvPov_IsEnabled()
+    if(g_MirvPovVoiceEnabled
+        && MirvPov_IsEnabled()
         && g_MirvPovShowSpeakerRetAddr
         && (size_t)ret == g_MirvPovShowSpeakerRetAddr) return false;
     return result;
@@ -202,6 +206,7 @@ static __int64 __fastcall New_MirvPov_ServerVoiceData(__int64 This, __int64 msg)
     __int64 result = g_Org_MirvPov_ServerVoiceData(This, msg);
     if(0 == g_MirvPovVoiceClearRenderPasses
         && playerSlot < 64
+        && g_MirvPovVoiceEnabled
         && MirvPov_IsEnabled()
         && MirvPov_IsVoicePlayerSlotOnWatchedTeam(playerSlot)) {
         MirvPov_SetSyntheticSpeaking(playerSlot, true);
@@ -284,14 +289,14 @@ static void MirvPov_UpdateVoiceRuntime() {
 }
 
 void MirvPov_UpdateVoiceHud() {
-    if(!MirvPov_IsEnabled()) return;
+    if(!g_MirvPovVoiceEnabled || !MirvPov_IsEnabled()) return;
     MirvPov_UpdateVoiceTeam();
     MirvPov_UpdateVoiceRuntime();
 }
 
 void MirvPovVoice_OnRenderPass()
 {
-    if(MirvPov_IsEnabled()) {
+    if(g_MirvPovVoiceEnabled && MirvPov_IsEnabled()) {
         MirvPov_UpdateVoiceTeam();
         MirvPov_UpdateVoiceRuntime();
     }
@@ -310,4 +315,22 @@ void MirvPov_ResetVoiceHud() {
     MirvPov_RestoreVoiceMaskCvar(g_MirvPovVoiceMaskLow);
     MirvPov_RestoreVoiceMaskCvar(g_MirvPovVoiceMaskHigh);
     MirvPov_RequestFullVoiceClear();
+}
+
+bool MirvPovVoice_IsEnabled()
+{
+    return g_MirvPovVoiceEnabled;
+}
+
+void MirvPovVoice_SetEnabled(bool enabled)
+{
+    if(g_MirvPovVoiceEnabled == enabled) return;
+
+    g_MirvPovVoiceEnabled = enabled;
+    MirvPov_ResetVoiceHud();
+
+    if(enabled && MirvPov_IsEnabled()) {
+        MirvPov_HookVoiceHud(GetModuleHandleW(L"client.dll"));
+        MirvPov_UpdateVoiceTeam();
+    }
 }
