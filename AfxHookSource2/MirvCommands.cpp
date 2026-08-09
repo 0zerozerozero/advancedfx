@@ -196,7 +196,7 @@ static void MirvPov_LoadVoiceScript()
 	AfxHookSourceRs_Engine_Load(path.string().c_str());
 }
 
-CON_COMMAND(mirv_pov, "POV HUD with radar showing teammates. Offline demo playback only.")
+CON_COMMAND(mirv_pov, "POV HUD with radar, feedback, and native pickup prompts. Offline demo playback only.")
 {
 	int argc = args->ArgC();
 	if(2 == argc) {
@@ -219,7 +219,7 @@ CON_COMMAND(mirv_pov, "POV HUD with radar showing teammates. Offline demo playba
 	}
 	advancedfx::Message(
 		"Usage: mirv_pov true|false\n"
-			"  true  - Enable POV HUD, teammate competitive radar colors, smoke-visible teammates, red enemies\n"
+			"  true  - Enable POV HUD, native pickup prompts, teammate competitive radar colors, smoke-visible teammates, red enemies\n"
 			"  false - Disable and restore original behavior\n"
 			"Current: %s\n"
 			"Note: Use mirv_pov_scoreboard 1 to enable demo scoreboard sync. Use mp_forcecamera 0 for cross-team switching. Offline demo only. Restores POV cvars on disable.\n"
