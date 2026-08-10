@@ -5,6 +5,7 @@
 #include "ClientEntitySystem.h"
 #include "Globals.h"
 #include "MirvPovCore.h"
+#include "MirvPovHookUtils.h"
 
 #include "../shared/AfxConsole.h"
 #include "../shared/binutils.h"
@@ -348,47 +349,6 @@ void EmitRestoreContext(uint8_t * code, size_t & pos, uint8_t stackAllocation)
     EmitU32(code, pos, stackAllocation);
 }
 
-uint8_t * AllocateNear(uint8_t * target, size_t size)
-{
-    SYSTEM_INFO systemInfo = {};
-    GetSystemInfo(&systemInfo);
-
-    const uintptr_t granularity = systemInfo.dwAllocationGranularity;
-    const uintptr_t targetAddress = reinterpret_cast<uintptr_t>(target);
-    const uintptr_t minimumAddress = targetAddress > 0x7fff0000
-        ? targetAddress - 0x7fff0000
-        : 0;
-    const uintptr_t maximumAddress = targetAddress + 0x7fff0000;
-
-    for(uintptr_t offset = 0; offset < 0x7fff0000; offset += granularity) {
-        if(targetAddress >= offset + granularity) {
-            uintptr_t address = (targetAddress - offset) & ~(granularity - 1);
-            if(minimumAddress <= address) {
-                if(void * result = VirtualAlloc(
-                    reinterpret_cast<void *>(address),
-                    size,
-                    MEM_COMMIT | MEM_RESERVE,
-                    PAGE_EXECUTE_READWRITE)) {
-                    return static_cast<uint8_t *>(result);
-                }
-            }
-        }
-
-        uintptr_t address = (targetAddress + offset + granularity - 1) & ~(granularity - 1);
-        if(address <= maximumAddress) {
-            if(void * result = VirtualAlloc(
-                reinterpret_cast<void *>(address),
-                size,
-                MEM_COMMIT | MEM_RESERVE,
-                PAGE_EXECUTE_READWRITE)) {
-                return static_cast<uint8_t *>(result);
-            }
-        }
-    }
-
-    return nullptr;
-}
-
 bool ApplyPatch(
     RadarPatchState & state,
     uint8_t * address,
@@ -484,7 +444,7 @@ bool PatchPovTeamVisibilityDecision(HMODULE clientDll)
     memcpy(&originalBranch, address + 6, sizeof(originalBranch));
     uint8_t * originalBranchTarget = continueAddress + originalBranch;
 
-    uint8_t * trampoline = AllocateNear(address, 512);
+    uint8_t * trampoline = MirvPovHookUtils::AllocateNear(address, 512);
     if(nullptr == trampoline) {
         advancedfx::Warning("[mirv_pov_radar] Could not allocate POV team visibility trampoline.\n");
         return false;
@@ -533,7 +493,7 @@ bool PatchCompetitiveColorPath(HMODULE clientDll)
 
     uint8_t * address = reinterpret_cast<uint8_t *>(match);
     constexpr size_t patchSize = 5;
-    uint8_t * trampoline = AllocateNear(address, 64);
+    uint8_t * trampoline = MirvPovHookUtils::AllocateNear(address, 64);
     if(nullptr == trampoline) {
         advancedfx::Warning("[mirv_pov_radar] Could not allocate competitive color path trampoline.\n");
         return false;
@@ -574,7 +534,7 @@ bool PatchCompetitiveTeamColor(
     constexpr size_t patchSize = 5;
     int32_t originalCall = *reinterpret_cast<int32_t *>(address + 1);
     uint8_t * originalCallTarget = address + patchSize + originalCall;
-    uint8_t * trampoline = AllocateNear(address, 64);
+    uint8_t * trampoline = MirvPovHookUtils::AllocateNear(address, 64);
     if(nullptr == trampoline) {
         advancedfx::Warning(
             "[mirv_pov_radar] Could not allocate %s trampoline.\n",
@@ -609,7 +569,7 @@ bool PatchEnemyColor(HMODULE clientDll)
 
     uint8_t * address = reinterpret_cast<uint8_t *>(match);
     constexpr size_t patchSize = 12;
-    uint8_t * trampoline = AllocateNear(address, 512);
+    uint8_t * trampoline = MirvPovHookUtils::AllocateNear(address, 512);
     if(nullptr == trampoline) {
         advancedfx::Warning("[mirv_pov_radar] Could not allocate enemy color trampoline.\n");
         return false;

@@ -4,6 +4,7 @@
 
 #include "ClientEntitySystem.h"
 #include "MirvPovCore.h"
+#include "MirvPovHookUtils.h"
 
 #include "../shared/AfxConsole.h"
 #include "../shared/binutils.h"
@@ -57,51 +58,6 @@ Afx::BinUtils::MemRange FindUniquePattern(
     Afx::BinUtils::MemRange second = Afx::BinUtils::FindPatternString(
         Afx::BinUtils::MemRange(first.End, range.End), pattern);
     return second.IsEmpty() ? first : Afx::BinUtils::MemRange::FromEmpty();
-}
-
-bool CalcRel32(uint8_t * fromNext, uint8_t * target, int32_t & result)
-{
-    const intptr_t relative = reinterpret_cast<intptr_t>(target)
-        - reinterpret_cast<intptr_t>(fromNext);
-    if(relative < INT32_MIN || INT32_MAX < relative) return false;
-    result = static_cast<int32_t>(relative);
-    return true;
-}
-
-uint8_t * AllocNear(uint8_t * target, size_t size)
-{
-    SYSTEM_INFO systemInfo;
-    GetSystemInfo(&systemInfo);
-    const uintptr_t granularity = systemInfo.dwAllocationGranularity;
-    const uintptr_t targetAddress = reinterpret_cast<uintptr_t>(target);
-    const uintptr_t minimumAddress = targetAddress > 0x7fff0000
-        ? targetAddress - 0x7fff0000
-        : 0;
-    const uintptr_t maximumAddress = targetAddress + 0x7fff0000;
-
-    for(uintptr_t offset = 0; offset < 0x7fff0000; offset += granularity) {
-        if(targetAddress >= offset + granularity) {
-            const uintptr_t address = (targetAddress - offset) & ~(granularity - 1);
-            if(minimumAddress <= address) {
-                if(void * result = VirtualAlloc(
-                    reinterpret_cast<void *>(address), size,
-                    MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE)) {
-                    return static_cast<uint8_t *>(result);
-                }
-            }
-        }
-
-        const uintptr_t address =
-            (targetAddress + offset + granularity - 1) & ~(granularity - 1);
-        if(address <= maximumAddress) {
-            if(void * result = VirtualAlloc(
-                reinterpret_cast<void *>(address), size,
-                MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE)) {
-                return static_cast<uint8_t *>(result);
-            }
-        }
-    }
-    return nullptr;
 }
 
 bool WriteCode(uint8_t * address, const uint8_t * bytes, size_t size)
@@ -367,7 +323,9 @@ void MirvPovPickupPrompt_Initialize(HMODULE clientDll)
         return;
     }
 
-    uint8_t * thunks = AllocNear(activeBuilderCallSite, kThunkAllocationSize);
+    uint8_t * thunks = MirvPovHookUtils::AllocateNear(
+        activeBuilderCallSite,
+        kThunkAllocationSize);
     if(nullptr == thunks) {
         advancedfx::Warning("[mirv_pov_pickup_prompt] Could not allocate call thunks.\n");
         return;
@@ -387,8 +345,11 @@ void MirvPovPickupPrompt_Initialize(HMODULE clientDll)
 
     int32_t localPawnThunkRelative = 0;
     int32_t activeBuilderThunkRelative = 0;
-    if(!CalcRel32(localPawnCallSite + 5, thunks, localPawnThunkRelative)
-        || !CalcRel32(
+    if(!MirvPovHookUtils::CalcRel32(
+            localPawnCallSite + 5,
+            thunks,
+            localPawnThunkRelative)
+        || !MirvPovHookUtils::CalcRel32(
             activeBuilderCallSite + 5,
             activeBuilderThunk,
             activeBuilderThunkRelative)) {
