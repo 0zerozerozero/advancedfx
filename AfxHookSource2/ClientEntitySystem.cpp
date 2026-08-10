@@ -420,7 +420,8 @@ void Hook_ClientEntitySystem3(HMODULE clientDll) {
 		org_LookupAttachment = (org_LookupAttachment_t)(startAddr + 5 + *(int32_t*)(startAddr + 1));
 		org_GetAttachment = (org_GetAttachment_t)(startAddr + 23 + 5 + *(int32_t*)(startAddr + 23 + 1));
 	} else ErrorBox(MkErrStr(__FILE__, __LINE__));
-}
+
+	}
 
 int GetHighestEntityIndex() {
     return 2048; // Hardcoded for now, because the function we have is the count, not the index and we need to change mirv-script API to support that better.

@@ -223,6 +223,10 @@ target_sources(${PROJECT_NAME} PRIVATE
     MirvPovHud.cpp
     MirvPovHud.h
 
+    MirvPovPickupPrompt.cpp
+    MirvPovPickupPrompt.h
+    MirvPovHookUtils.h
+
     MirvPovRadar.cpp
     MirvPovRadar.h
 

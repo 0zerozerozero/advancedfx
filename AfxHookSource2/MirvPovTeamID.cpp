@@ -4,6 +4,7 @@
 
 #include "ClientEntitySystem.h"
 #include "MirvPovCore.h"
+#include "MirvPovHookUtils.h"
 
 #include "../shared/AfxConsole.h"
 #include "../shared/AfxDetours.h"
@@ -55,50 +56,6 @@ CEntityInstance * __fastcall GetTeamIdContextPlayer()
     }
 }
 
-bool CalcRel32(uint8_t * fromNext, uint8_t * target, int32_t & result)
-{
-    intptr_t relative = target - fromNext;
-    if(relative < INT32_MIN || INT32_MAX < relative) return false;
-    result = static_cast<int32_t>(relative);
-    return true;
-}
-
-uint8_t * AllocNear(uint8_t * target, size_t size)
-{
-    SYSTEM_INFO systemInfo;
-    GetSystemInfo(&systemInfo);
-    const uintptr_t granularity = systemInfo.dwAllocationGranularity;
-    const uintptr_t targetAddress = reinterpret_cast<uintptr_t>(target);
-    const uintptr_t minimumAddress = targetAddress > 0x7fff0000
-        ? targetAddress - 0x7fff0000
-        : 0;
-    const uintptr_t maximumAddress = targetAddress + 0x7fff0000;
-
-    for(uintptr_t offset = 0; offset < 0x7fff0000; offset += granularity) {
-        if(targetAddress >= offset + granularity) {
-            uintptr_t address = (targetAddress - offset) & ~(granularity - 1);
-            if(minimumAddress <= address) {
-                if(void * result = VirtualAlloc(
-                    reinterpret_cast<void *>(address), size,
-                    MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE)) {
-                    return static_cast<uint8_t *>(result);
-                }
-            }
-        }
-
-        uintptr_t address = (targetAddress + offset + granularity - 1) & ~(granularity - 1);
-        if(address <= maximumAddress) {
-            if(void * result = VirtualAlloc(
-                reinterpret_cast<void *>(address), size,
-                MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE)) {
-                return static_cast<uint8_t *>(result);
-            }
-        }
-    }
-
-    return nullptr;
-}
-
 } // namespace
 
 void MirvPovTeamID_ApplyPatches(HMODULE clientDll)
@@ -133,7 +90,7 @@ void MirvPovTeamID_ApplyPatches(HMODULE clientDll)
     g_GetNativeTeamIdContextPlayer = reinterpret_cast<GetTeamIdContextPlayerFn>(
         callSite + 5 + nativeRelative);
 
-    uint8_t * thunk = AllocNear(callSite, 16);
+    uint8_t * thunk = MirvPovHookUtils::AllocateNear(callSite, 16);
     if(nullptr == thunk) {
         advancedfx::Warning("[mirv_pov_teamid] Could not allocate the TeamID context thunk.\n");
         g_GetNativeTeamIdContextPlayer = nullptr;
@@ -150,7 +107,7 @@ void MirvPovTeamID_ApplyPatches(HMODULE clientDll)
     FlushInstructionCache(GetCurrentProcess(), thunk, 12);
 
     int32_t thunkRelative = 0;
-    if(!CalcRel32(callSite + 5, thunk, thunkRelative)) {
+    if(!MirvPovHookUtils::CalcRel32(callSite + 5, thunk, thunkRelative)) {
         advancedfx::Warning("[mirv_pov_teamid] TeamID context thunk is out of range.\n");
         VirtualFree(thunk, 0, MEM_RELEASE);
         g_GetNativeTeamIdContextPlayer = nullptr;

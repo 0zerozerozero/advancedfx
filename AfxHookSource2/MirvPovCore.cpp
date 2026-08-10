@@ -6,6 +6,7 @@
 #include "Globals.h"
 #include "MirvPovFeedback.h"
 #include "MirvPovHud.h"
+#include "MirvPovPickupPrompt.h"
 #include "MirvPovRadar.h"
 #include "MirvPovScoreboard.h"
 #include "MirvPovSoundCircle.h"
@@ -194,6 +195,7 @@ void MirvPov_Enable(HMODULE clientDll)
     MirvPov_ResetVoiceHud();
 
     g_MirvPovEnabled = true;
+    MirvPovPickupPrompt_Initialize(clientDll);
     MirvPovFeedback_Initialize(clientDll);
     if(MirvPovVoice_IsEnabled()) MirvPov_UpdateVoiceTeam();
 }
@@ -207,6 +209,7 @@ void MirvPov_Disable()
     MirvPovHud_RemovePatches();
     MirvPov_RemoveRadarPatches();
     MirvPovTeamID_RemovePatches();
+    MirvPovPickupPrompt_RemovePatches();
     MirvPov_ResetVoiceHud();
     g_MirvPovEnabled = false;
 }
