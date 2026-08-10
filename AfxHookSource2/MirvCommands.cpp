@@ -14,13 +14,12 @@
 
 #include <string>
 #include <cstring>
+#include <cstdlib>
 #include <filesystem>
 
 #include <algorithm>
 
 bool g_bHookedMirvCommands = false;
-
-static const char * MIRV_POV_LOCAL_BUILD = "mirv_pov-local-20260619-voicehud";
 
 extern SOURCESDK::CS2::ISource2EngineToClient * g_pEngineToClient;
 
@@ -194,7 +193,7 @@ static void MirvPov_LoadVoiceScript()
 	AfxHookSourceRs_Engine_Load(path.string().c_str());
 }
 
-CON_COMMAND(mirv_pov, "POV HUD with radar showing teammates. Offline demo playback only.")
+CON_COMMAND(mirv_pov, "POV HUD with teammate radar and native flashbang/HE deafening. Offline demo playback only.")
 {
 	int argc = args->ArgC();
 	if(2 == argc) {
@@ -205,7 +204,7 @@ CON_COMMAND(mirv_pov, "POV HUD with radar showing teammates. Offline demo playba
 			MirvPov_ApplyCvarSettings();
 			MirvPovTeamID_ApplyPatches(hClient);
 			MirvPov_Enable(hClient);
-			advancedfx::Message("mirv_pov enabled. Use mp_forcecamera 0 for cross-team switching.\n");
+			advancedfx::Message("mirv_pov enabled with native flashbang/HE deafening. Use mp_forcecamera 0 for cross-team switching.\n");
 			return;
 		}
 		if(0 == _stricmp(arg1, "false") || 0 == _stricmp(arg1, "0") || 0 == _stricmp(arg1, "off")) {
@@ -217,12 +216,11 @@ CON_COMMAND(mirv_pov, "POV HUD with radar showing teammates. Offline demo playba
 	}
 	advancedfx::Message(
 		"Usage: mirv_pov true|false\n"
-		"  true  - Enable POV HUD, teammate competitive radar colors, smoke-visible teammates, red enemies\n"
+		"  true  - Enable POV HUD, teammate competitive radar colors, smoke-visible teammates, red enemies, and native flashbang/HE deafening\n"
 		"  false - Disable and restore original behavior\n"
 		"Current: %s\n"
-		"Build: %s\n"
-		"Note: Use mirv_pov_scoreboard 1 to enable demo scoreboard sync. Use mp_forcecamera 0 for cross-team switching. Offline demo only. Restores POV cvars on disable.\n"
-		, MirvPov_IsEnabled() ? "enabled" : "disabled", MIRV_POV_LOCAL_BUILD
+		"Note: Flashbang and HE deafening follow the current POV target during demo playback. Use mirv_pov_scoreboard 1 to enable demo scoreboard sync. Use mp_forcecamera 0 for cross-team switching. Offline demo only. Restores POV cvars on disable.\n"
+		, MirvPov_IsEnabled() ? "enabled" : "disabled"
 	);
 }
 

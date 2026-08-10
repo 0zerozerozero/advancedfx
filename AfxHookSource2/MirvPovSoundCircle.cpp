@@ -21,7 +21,6 @@
 namespace {
 
 using GetLocalPawn_t = CEntityInstance * (__fastcall *)();
-using DoStartSoundEvent_t = void (__fastcall *)(void *, void *);
 using QueueRadarSound_t = void (__fastcall *)(CEntityInstance *, int, float, bool);
 using HashSoundField_t = uint32_t (__fastcall *)(const char *, uint32_t);
 using ResolveSoundEventId_t = uint32_t (__fastcall *)(void *, const char *, bool);
@@ -30,13 +29,15 @@ using GetSoundFieldCount_t = int (__fastcall *)(void *, uint32_t, uint32_t, bool
 using GetSoundFieldValue_t = bool (__fastcall *)(void *, uint32_t, uint32_t, const void **, int, bool);
 
 GetLocalPawn_t g_OrgGetLocalPawn = nullptr;
-DoStartSoundEvent_t g_OrgDoStartSoundEvent = nullptr;
 QueueRadarSound_t g_QueueRadarSound = nullptr;
 void ** g_SoundEventInterfaceSlot = nullptr;
 void * g_SoundGateReturnAddresses[3] = {};
 uint32_t g_DistanceCurveKey = 0;
 bool g_Hooked = false;
 std::atomic_bool g_NativeProducerSeen = false;
+
+constexpr size_t kSoundMessageEventHashOffset = 0x54;
+constexpr size_t kSoundMessageSourceEntityOffset = 0x60;
 
 uint32_t FinalizeSoundFieldHash(uint32_t hash)
 {
@@ -91,6 +92,14 @@ void * GetSoundEventInterface()
     return nullptr != interfaceBase
         ? reinterpret_cast<unsigned char *>(interfaceBase) + 8
         : nullptr;
+}
+
+const char * GetSoundEventName(void * soundEventInterface, uint32_t eventHash)
+{
+    if(nullptr == soundEventInterface || 0 == eventHash) return nullptr;
+    void ** vtable = *reinterpret_cast<void ***>(soundEventInterface);
+    auto getName = reinterpret_cast<GetSoundEventName_t>(vtable[0x10 / sizeof(void *)]);
+    return nullptr != getName ? getName(soundEventInterface, eventHash) : nullptr;
 }
 
 int GetNativeSoundRadius(void * soundEventInterface, uint32_t eventId)
@@ -161,51 +170,6 @@ CEntityInstance * __fastcall New_GetLocalPawn()
     }
 }
 
-void __fastcall New_DoStartSoundEvent(void * soundOpGameSystem, void * netMessage)
-{
-    uint32_t eventHash = 0;
-    CEntityInstance * sourcePawn = nullptr;
-    bool isPov = false;
-    __try {
-        if(nullptr != netMessage) {
-            unsigned char * message = reinterpret_cast<unsigned char *>(netMessage);
-            eventHash = *reinterpret_cast<uint32_t *>(message + 0x54);
-            int sourceEntityIndex = *reinterpret_cast<int *>(message + 0x60);
-            sourcePawn = ResolveSoundSourcePawn(sourceEntityIndex);
-            isPov = IsCurrentPovPlayer(sourcePawn);
-        }
-    } __except(EXCEPTION_EXECUTE_HANDLER) {
-    }
-
-    g_OrgDoStartSoundEvent(soundOpGameSystem, netMessage);
-
-    if(!MirvPov_IsEnabled()
-        || !isPov
-        || nullptr == sourcePawn
-        || 0 == eventHash) return;
-    if(g_NativeProducerSeen.load()) return;
-
-    __try {
-        void * soundEventInterface = GetSoundEventInterface();
-        if(nullptr == soundEventInterface) return;
-        void ** vtable = *reinterpret_cast<void ***>(soundEventInterface);
-        auto getName = reinterpret_cast<GetSoundEventName_t>(vtable[0x10 / sizeof(void *)]);
-        auto resolveEventId = reinterpret_cast<ResolveSoundEventId_t>(vtable[0]);
-        if(nullptr == getName || nullptr == resolveEventId) return;
-
-        const char * name = getName(soundEventInterface, eventHash);
-        if(nullptr == name || nullptr == strstr(name, ".Step")) return;
-
-        uint32_t eventId = resolveEventId(soundEventInterface, name, true);
-        if(0 == eventId) return;
-        int radius = GetNativeSoundRadius(soundEventInterface, eventId);
-        if(radius < 1) return;
-
-        g_QueueRadarSound(sourcePawn, radius, 0.5f, true);
-    } __except(EXCEPTION_EXECUTE_HANDLER) {
-    }
-}
-
 } // namespace
 
 void MirvPovSoundCircle_Initialize(HMODULE clientDll)
@@ -252,36 +216,6 @@ void MirvPovSoundCircle_Initialize(HMODULE clientDll)
         return;
     }
 
-    size_t doStartSoundEvent = getAddress(
-        clientDll,
-        "48 89 5C 24 10 48 89 6C 24 18 56 57 41 56 48 81 EC 90 00 00 00 8B 42 40");
-    if(0 == doStartSoundEvent) {
-        advancedfx::Warning("[mirv_pov_sound_circle] Native SOS start-sound handler was not found.\n");
-        return;
-    }
-    uint8_t * createSoundEventCall = reinterpret_cast<uint8_t *>(doStartSoundEvent) + 0xec;
-    if(0xe8 != createSoundEventCall[0]) {
-        advancedfx::Warning("[mirv_pov_sound_circle] Native SOS create-sound call validation failed.\n");
-        return;
-    }
-    int32_t createSoundEventRelative = *reinterpret_cast<int32_t *>(createSoundEventCall + 1);
-    uint8_t * createSoundEvent = createSoundEventCall + 5 + createSoundEventRelative;
-    uint8_t * soundEventGlobalLoad = createSoundEvent + 0xb8;
-    const uint8_t expectedGlobalLoadTail[] = {0x41, 0x8b, 0xd4, 0x48, 0x83, 0xc1, 0x08};
-    if(0x48 != soundEventGlobalLoad[0]
-        || 0x8b != soundEventGlobalLoad[1]
-        || 0x0d != soundEventGlobalLoad[2]
-        || 0 != memcmp(
-            soundEventGlobalLoad + 7,
-            expectedGlobalLoadTail,
-            sizeof(expectedGlobalLoadTail))) {
-        advancedfx::Warning("[mirv_pov_sound_circle] Native sound-event interface validation failed.\n");
-        return;
-    }
-    int32_t soundEventGlobalRelative = *reinterpret_cast<int32_t *>(soundEventGlobalLoad + 3);
-    void ** soundEventInterfaceSlot = reinterpret_cast<void **>(
-        soundEventGlobalLoad + 7 + soundEventGlobalRelative);
-
     size_t hashSoundField = getAddress(
         clientDll,
         "48 89 5C 24 08 44 0F B6 09 44 8B DA 4C 8B C1 41 8D 41 BF 3C 19 77 04 41 80 C1 20");
@@ -300,21 +234,16 @@ void MirvPovSoundCircle_Initialize(HMODULE clientDll)
     }
 
     g_OrgGetLocalPawn = reinterpret_cast<GetLocalPawn_t>(localPawnTargets[0]);
-    g_OrgDoStartSoundEvent = reinterpret_cast<DoStartSoundEvent_t>(doStartSoundEvent);
     g_QueueRadarSound = reinterpret_cast<QueueRadarSound_t>(queueRadarSound);
-    g_SoundEventInterfaceSlot = soundEventInterfaceSlot;
     g_DistanceCurveKey = distanceCurveKey;
     for(int i = 0; i < 3; ++i) g_SoundGateReturnAddresses[i] = callSites[i] + 5;
 
     DetourTransactionBegin();
     DetourUpdateThread(GetCurrentThread());
     DetourAttach(&(PVOID &)g_OrgGetLocalPawn, New_GetLocalPawn);
-    DetourAttach(&(PVOID &)g_OrgDoStartSoundEvent, New_DoStartSoundEvent);
     if(NO_ERROR != DetourTransactionCommit()) {
         g_OrgGetLocalPawn = nullptr;
-        g_OrgDoStartSoundEvent = nullptr;
         g_QueueRadarSound = nullptr;
-        g_SoundEventInterfaceSlot = nullptr;
         g_DistanceCurveKey = 0;
         g_SoundGateReturnAddresses[0] = nullptr;
         g_SoundGateReturnAddresses[1] = nullptr;
@@ -324,4 +253,57 @@ void MirvPovSoundCircle_Initialize(HMODULE clientDll)
     }
 
     g_Hooked = true;
+}
+
+void MirvPovSoundCircle_SetSoundEventInterfaceSlot(void ** slot)
+{
+    g_SoundEventInterfaceSlot = slot;
+}
+
+const char * MirvPovSoundCircle_GetNativeSoundEventName(uint32_t eventHash)
+{
+    return GetSoundEventName(GetSoundEventInterface(), eventHash);
+}
+
+void MirvPovSoundCircle_ProcessNativeSoundEvent(void * netMessage)
+{
+    if(!MirvPov_IsEnabled()
+        || nullptr == netMessage
+        || nullptr == g_QueueRadarSound
+        || 0 == g_DistanceCurveKey
+        || g_NativeProducerSeen.load()) return;
+
+    uint32_t eventHash = 0;
+    CEntityInstance * sourcePawn = nullptr;
+    bool isPov = false;
+    __try {
+        unsigned char * message = reinterpret_cast<unsigned char *>(netMessage);
+        eventHash = *reinterpret_cast<uint32_t *>(message + kSoundMessageEventHashOffset);
+        int sourceEntityIndex = *reinterpret_cast<int *>(message + kSoundMessageSourceEntityOffset);
+        sourcePawn = ResolveSoundSourcePawn(sourceEntityIndex);
+        isPov = IsCurrentPovPlayer(sourcePawn);
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        return;
+    }
+
+    if(!isPov || nullptr == sourcePawn || 0 == eventHash) return;
+
+    __try {
+        void * soundEventInterface = GetSoundEventInterface();
+        if(nullptr == soundEventInterface) return;
+        void ** vtable = *reinterpret_cast<void ***>(soundEventInterface);
+        auto resolveEventId = reinterpret_cast<ResolveSoundEventId_t>(vtable[0]);
+        if(nullptr == resolveEventId) return;
+
+        const char * name = GetSoundEventName(soundEventInterface, eventHash);
+        if(nullptr == name || nullptr == strstr(name, ".Step")) return;
+
+        uint32_t eventId = resolveEventId(soundEventInterface, name, true);
+        if(0 == eventId) return;
+        int radius = GetNativeSoundRadius(soundEventInterface, eventId);
+        if(radius < 1) return;
+
+        g_QueueRadarSound(sourcePawn, radius, 0.5f, true);
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+    }
 }

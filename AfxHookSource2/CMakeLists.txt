@@ -220,6 +220,9 @@ target_sources(${PROJECT_NAME} PRIVATE
     MirvPovHud.cpp
     MirvPovHud.h
 
+    MirvPovAudio.cpp
+    MirvPovAudio.h
+
     MirvPanorama.cpp
     MirvPanorama.h
 
