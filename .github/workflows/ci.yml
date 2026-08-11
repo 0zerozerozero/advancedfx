@@ -36,5 +36,5 @@ jobs:
       - name: Upload Build Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: staging-release
-          path: staging-release/bin
+          name: afxhooksource2
+          path: build/staging-release/bin/x64/AfxHookSource2.dll
