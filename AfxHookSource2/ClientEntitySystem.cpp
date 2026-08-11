@@ -4,6 +4,7 @@
 #include "DeathMsg.h"
 #include "WrpConsole.h"
 #include "Globals.h"
+#include "MirvPovAudio.h"
 #include "MirvPovFeedback.h"
 #include "MirvPovHud.h"
 #include "MirvPovRadar.h"
@@ -887,12 +888,18 @@ void MirvPov_RestorePersistentIdentity() {
 }
 
 void MirvPov_UpdateSeekDetection() {
-    if(!MirvPov_IsEnabled()) return;
-    if(!g_pEngineToClient) return;
+    if(!MirvPov_IsEnabled() || !g_pEngineToClient) {
+        MirvPovFeedback_Reset();
+        return;
+    }
     SOURCESDK::CS2::IDemoFile * pDemoFile = g_pEngineToClient->GetDemoFile();
-    if(!pDemoFile) return;
+    if(!pDemoFile) {
+        MirvPovFeedback_Reset();
+        return;
+    }
     int curTick = pDemoFile->GetDemoTick();
     MirvPovHud_UpdateSeekDetection(curTick);
+    MirvPovFeedback_Update(curTick);
 }
 
 void MirvPov_UpdatePersistentIdentity() {
@@ -1123,6 +1130,7 @@ void MirvPov_SetScoreboardSyncEnabled(bool enabled) {
 
 void MirvPov_Enable(HMODULE clientDll) {
     if(g_MirvPovEnabled) return;
+    MirvPovFeedback_Reset();
     g_MirvPovAutoSync = true;
     g_MirvPovScoreboardSyncEnabled = false;
     g_MirvPovHltvScoreboardOpen = false;
@@ -1136,12 +1144,14 @@ void MirvPov_Enable(HMODULE clientDll) {
     g_MirvPovEnabled = true;
     MirvPovFeedback_Initialize(clientDll);
     MirvPovSoundCircle_Initialize(clientDll);
+    MirvPovAudio_Initialize(clientDll);
     MirvPovTeamHealth_Initialize(clientDll);
     MirvPov_UpdateVoiceTeam();
 }
 
 void MirvPov_Disable() {
     if(!g_MirvPovEnabled) return;
+    MirvPovFeedback_Reset();
     MirvPov_SetScoreboardOpen(false);
     g_MirvPovScoreboardSyncEnabled = false;
     g_MirvPovAutoSync = false;
